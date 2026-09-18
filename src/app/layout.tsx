@@ -54,10 +54,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           name="viewport" 
           content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" 
         />
-        {/* 🔥 Cache-Busting Trick: ?v=2 lagane se browser naya icon turant utha lega aur blank nahi dikhayega */}
-        <link rel="icon" type="image/png" href="/icon.png?v=2" />
-        <link rel="apple-touch-icon" href="/icon.png?v=2" />
-        <link rel="shortcut icon" href="/icon.png?v=2" />
+        {/* 🔥 ULTIMATE TRICK: Humne file ka naam hi badal diya taaki purana cache kaam na kare */}
+        <link rel="icon" type="image/png" href="/mylogo.png" />
+        <link rel="apple-touch-icon" href="/mylogo.png" />
+        <link rel="shortcut icon" href="/mylogo.png" />
       </head>
       <body style={{ 
         margin: 0, 
