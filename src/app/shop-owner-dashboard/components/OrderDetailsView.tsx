@@ -4,11 +4,6 @@ import { supabase } from '@/lib/supabaseClient';
 import PermanentFreeCall from '@/components/PermanentFreeCall';
 import { printShopInvoice, printDeliveryChallan, printMiniChallan } from './InvoiceHelper'; 
 
-// 🔥 IMPORT YOUR NEW BUTTON COMPONENTS HERE 🔥
-import AcceptOrderButton from './AcceptOrderButton'; 
-import RescheduleButton from './RescheduleButton';
-import OutForDeliveryButton from './OutForDeliveryButton';
-
 const ADMIN_COMMISSION_PERCENTAGE = 0.05;
 
 export default function OrderDetailsView({
@@ -21,9 +16,21 @@ export default function OrderDetailsView({
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // 🔥 STATES FOR COLLAPSIBLE SECTIONS
+  // 🔥 COLLAPSIBLE SECTIONS STATES
   const [showChatBox, setShowChatBox] = useState(false);
   const [showReturnPolicySettings, setShowReturnPolicySettings] = useState(false);
+
+  // ==========================================
+  // 🔥 NEW STATES: CALENDAR & TIME PICKER 🔥
+  // ==========================================
+  const [showDateTimePicker, setShowDateTimePicker] = useState(false);
+  const [dateTimeAction, setDateTimeAction] = useState(''); // 'accepted', 'rescheduled', 'out_for_delivery'
+  const [selectedDateTime, setSelectedDateTime] = useState('');
+
+  // पुरानी तारीख ब्लॉक करने के लिए आज का समय निकाल रहे हैं
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  const minDateTime = now.toISOString().slice(0, 16); 
 
   const getProductDetailsArray = (order: any) => {
     if (!order) return [];
@@ -119,6 +126,66 @@ export default function OrderDetailsView({
     finally { setIsProcessing(false); }
   };
 
+  // ==========================================
+  // 🔥 NEW CALENDAR ACTION FUNCTIONS 🔥
+  // ==========================================
+  const handleActionClick = (action: string) => {
+    if (action === 'accepted' && selectedOrder?.payment_method === 'UPI' && selectedOrder?.payment_status === 'pending') {
+      alert("Admin dwara payment verify hone ka intezar karein.");
+      return;
+    }
+    setDateTimeAction(action);
+    setShowDateTimePicker(true);
+  };
+
+  const confirmActionWithDate = async () => {
+    if (!selectedDateTime) return alert("Kripya Date aur Time dono select karein!");
+    
+    setIsProcessing(true);
+    const id = selectedOrder.id;
+    const tableName = (selectedOrder.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
+    const newShopId = currentShop?.id || selectedOrder.shop_id;
+
+    // Date Format fix
+    const dateObj = new Date(selectedDateTime);
+    const formattedDate = dateObj.toLocaleString('en-IN', {
+      day: 'numeric', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: true
+    });
+
+    try {
+      let statusToUpdate = dateTimeAction; 
+      let updateData: any = { shop_id: newShopId, estimated_delivery: formattedDate };
+
+      if (dateTimeAction === 'rescheduled') {
+         updateData.estimated_delivery = formattedDate;
+      } else {
+         updateData.status = statusToUpdate;
+      }
+
+      setOrders((prev:any[]) => prev.map((o:any) => o.id === id ? { ...o, ...updateData } : o));
+      setSelectedOrder((prev: any) => ({ ...prev, ...updateData }));
+
+      await supabase.from(tableName).update(updateData).eq('id', id);
+
+      setShowDateTimePicker(false);
+      setSelectedDateTime('');
+      fetchOrders();
+      
+      if (dateTimeAction === 'accepted' || dateTimeAction === 'out_for_delivery') {
+          setSelectedOrder(null);
+          if(setOrderSubTab) setOrderSubTab('local');
+      } else {
+          alert("✅ Delivery Date aur Time successfully update ho gaya!");
+      }
+    } catch(e:any) {
+      alert("Error: " + e.message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Old Prompt based status updates
   const updateOrderStatus = async (id: number, newStatus: string) => {
     const orderToUpdate = orders.find((o:any) => o.id === id);
     if (!orderToUpdate) return;
@@ -126,6 +193,15 @@ export default function OrderDetailsView({
     
     const newShopId = currentShop?.id || orderToUpdate.shop_id; 
     let newDate = orderToUpdate.estimated_delivery || "";
+
+    if (newStatus === 'accepted' || newStatus === 'out_for_delivery') {
+      const askDate = prompt(
+        "Kripya Delivery ka EXACT DATE aur TIME batayein:\n(Format: 15 August 2026, 04:30 PM)", 
+        newDate || "15 August 2026, 04:30 PM"
+      );
+      if (askDate !== null && askDate.trim() !== "") newDate = askDate;
+      else return; 
+    }
 
     setIsProcessing(true);
     setOrders((prev:any[]) => prev.map((o:any) => o.id === id ? { ...o, status: newStatus, shop_id: newShopId, estimated_delivery: newDate } : o));
@@ -158,6 +234,25 @@ export default function OrderDetailsView({
       setSelectedOrder((prev: any) => ({ ...prev, status: 'RTO Initiated' }));
       alert("⚠️ Order marked as RTO (Delivery Failed). Ab aap ise receive kar sakte hain jab packet wapas aaye.");
     } catch(e:any) { alert(e.message); } 
+    finally { setIsProcessing(false); }
+  };
+
+  const editEntireOrderDeliveryTime = async (orderId: number) => {
+    const orderToUpdate = orders.find((o:any) => o.id === orderId);
+    if (!orderToUpdate) return;
+    const tableName = (orderToUpdate.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
+
+    const newTime = prompt("Naya Delivery Date aur Time dalein:\n(Format: 15 August 2026, 04:30 PM)", selectedOrder?.estimated_delivery || "15 August 2026, 04:30 PM");
+    if (!newTime || newTime.trim() === "") return;
+    
+    setIsProcessing(true);
+    try {
+      const newShopId = currentShop?.id || orderToUpdate.shop_id;
+      setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, estimated_delivery: newTime, shop_id: newShopId } : o));
+      setSelectedOrder((prev: any) => ({ ...prev, estimated_delivery: newTime }));
+      await supabase.from(tableName).update({ estimated_delivery: newTime, shop_id: newShopId }).eq('id', orderId);
+      fetchOrders(); 
+    } catch(e:any) { alert("Error: " + e.message); } 
     finally { setIsProcessing(false); }
   };
 
@@ -598,6 +693,7 @@ export default function OrderDetailsView({
   const isRtoCompleted = s === 'rto received';
 
   const itemsTotalAmt = getShopTotal(selectedOrder);
+  const deliveryAmt = Number(selectedOrder?.delivery_charge || selectedOrder?.shipping_charge || selectedOrder?.shipping_fee || 0);
   
   const shopAdminFee = itemsTotalAmt * ADMIN_COMMISSION_PERCENTAGE;
   const shopEarn = itemsTotalAmt - shopAdminFee;
@@ -607,6 +703,30 @@ export default function OrderDetailsView({
   return (
     <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #38bdf8', animation: 'fadeIn 0.3s' }}>
         
+      {/* 🔥 CALENDAR MODAL OVERLAY 🔥 */}
+      {showDateTimePicker && (
+        <div style={modalOverlayStyle}>
+          <div style={{...modalContentStyle, textAlign: 'center'}}>
+            <h3 style={{ color: '#38bdf8', marginTop: 0 }}>📅 Select Date & Time</h3>
+            <p style={{ color: '#94a3b8', fontSize: '13px', marginBottom: '15px' }}>
+              {dateTimeAction === 'accepted' ? 'Order kab process/deliver hoga?' : 
+               dateTimeAction === 'rescheduled' ? 'Naya delivery time kya hai?' : 'Delivery kab pahunchegi?'}
+            </p>
+            <input 
+              type="datetime-local" 
+              min={minDateTime}
+              value={selectedDateTime} 
+              onChange={(e) => setSelectedDateTime(e.target.value)} 
+              style={{ padding: '12px', borderRadius: '8px', border: '1px solid #334155', backgroundColor: '#0f172a', color: 'white', fontSize: '15px', width: '100%', boxSizing: 'border-box' }} 
+            />
+            <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
+              <button onClick={() => setShowDateTimePicker(false)} disabled={isProcessing} style={{ flex: 1, padding: '12px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>Cancel</button>
+              <button onClick={confirmActionWithDate} disabled={isProcessing} style={{ flex: 1, padding: '12px', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>{isProcessing ? '⏳ Saving...' : 'Confirm'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header WITH BACK BUTTON */}
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '15px', borderBottom: '2px solid #334155', paddingBottom: '15px', marginBottom: '20px' }}>
         <button 
@@ -979,27 +1099,28 @@ export default function OrderDetailsView({
         </div>
       ) : null}
 
-      {/* Normal Action Buttons */}
+      {/* ==========================================
+          🔥 ALL ACTION BUTTONS (WITH CALENDAR LOGIC) 🔥
+          ========================================== */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
         
         {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
           <>
-            {/* 🔥 NEW ACCEPT BUTTON (WITH CALENDAR) 🔥 */}
-            <AcceptOrderButton 
-              orderId={selectedOrder.id} 
-              currentStatus={selectedOrder.status} 
-              paymentMethod={selectedOrder.payment_method} 
-              paymentStatus={selectedOrder.payment_status} 
-              onStatusChange={fetchOrders} 
-            />
-            
+            {/* ACCEPT BUTTON (MODIFIED FOR CALENDAR) */}
+            {['accepted', 'processing', 'completed', 'delivered'].includes(s) ? (
+                <span style={{ ...actionBtnStyle, backgroundColor: '#1e293b', border: '1px solid #10b981', color: '#10b981' }}>Order Accepted ✅</span>
+            ) : (selectedOrder?.payment_method === 'UPI' && selectedOrder?.payment_status === 'failed') ? (
+                <button disabled style={{ ...actionBtnStyle, backgroundColor: '#ef4444', cursor: 'not-allowed' }}>❌ Fake Payment</button>
+            ) : (selectedOrder?.payment_method === 'UPI' && selectedOrder?.payment_status === 'pending') ? (
+                <button disabled style={{ ...actionBtnStyle, backgroundColor: '#475569', cursor: 'not-allowed' }}>🔒 Waiting for Admin</button>
+            ) : (
+                <button onClick={() => handleActionClick('accepted')} style={{ ...actionBtnStyle, backgroundColor: '#10b981' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : (selectedOrder?.payment_method === 'UPI' ? '✅ Payment Secured (Accept)' : '✅ Accept Order (COD)')}</button>
+            )}
+
             <button onClick={() => sendToCustomerApproval(selectedOrder.id)} style={{ ...actionBtnStyle, backgroundColor: '#f59e0b' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '⚠️ Send to Customer Approval'}</button>
             
-            {/* 🔥 NEW OUT FOR DELIVERY BUTTON (WITH CALENDAR) 🔥 */}
-            <OutForDeliveryButton 
-              orderId={selectedOrder.id} 
-              onStatusChange={fetchOrders} 
-            />
+            {/* OUT FOR DELIVERY BUTTON (MODIFIED FOR CALENDAR) */}
+            <button onClick={() => handleActionClick('out_for_delivery')} style={{ ...actionBtnStyle, backgroundColor: '#a855f7' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '🛵 Mark Out for Delivery'}</button>
           </>
         )}
 
@@ -1011,11 +1132,8 @@ export default function OrderDetailsView({
         )}
         
         {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
-          /* 🔥 NEW RESCHEDULE BUTTON (WITH CALENDAR) 🔥 */
-          <RescheduleButton 
-            orderId={selectedOrder.id} 
-            onStatusChange={fetchOrders} 
-          />
+          /* RESCHEDULE BUTTON (MODIFIED FOR CALENDAR) */
+          <button onClick={() => handleActionClick('rescheduled')} style={{ ...actionBtnStyle, backgroundColor: '#6366f1' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '⏱️ Reschedule Delivery'}</button>
         )}
         
         {(s === 'out_for_delivery' || s.includes('out') || s.includes('transit')) && (
@@ -1024,7 +1142,7 @@ export default function OrderDetailsView({
         
         {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
           <div style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
-            <button onClick={() => markOrderAsCompleted(selectedOrder.id)} style={{ width: '100%', padding: '16px', backgroundColor: isCompleted ? '#334155' : '#ef4444', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '18px', cursor: isCompleted || isProcessing ? 'not-allowed' : 'pointer', boxShadow: isCompleted ? 'none' : '0 4px 10px rgba(239, 68, 68, 0.3)', opacity: isProcessing ? 0.7 : 1 }} disabled={isCompleted || isProcessing}>
+            <button onClick={() => markOrderAsCompleted(selectedOrder.id)} style={{ width: '100%', padding: '16px', backgroundColor: isCompleted ? '#334155' : '#ef4444', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '18px', cursor: isCompleted || isProcessing ? 'not-allowed' : 'pointer', boxShadow: isCompleted ? 'none' : '0 4px 10px rgba(239, 68, 68, 0.3)' }} disabled={isCompleted || isProcessing}>
               {isProcessing ? '⏳ PROCESSING...' : (isCompleted ? '✅ ALREADY DELIVERED' : '🏁 Mark Delivered & Add to Wallet')}
             </button>
           </div>
@@ -1110,3 +1228,5 @@ export default function OrderDetailsView({
 
 const actionBtnStyle: React.CSSProperties = { padding: '12px', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', textAlign: 'center', transition: '0.2s' };
 const smallBtn: React.CSSProperties = { padding: '8px 12px', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
+const modalOverlayStyle: React.CSSProperties = { position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 100000, padding: '15px', boxSizing: 'border-box' };
+const modalContentStyle: React.CSSProperties = { backgroundColor: '#1e293b', padding: '25px', borderRadius: '16px', width: '100%', maxWidth: '400px', border: '1px solid #38bdf8', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)' };
