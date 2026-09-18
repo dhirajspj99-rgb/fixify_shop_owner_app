@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient'; 
 import PermanentFreeCall from '@/components/PermanentFreeCall';
 import { printShopInvoice, printDeliveryChallan, printMiniChallan } from './InvoiceHelper'; 
@@ -19,6 +19,12 @@ export default function OrderDetailsView({
   // 🔥 COLLAPSIBLE SECTIONS STATES
   const [showChatBox, setShowChatBox] = useState(false);
   const [showReturnPolicySettings, setShowReturnPolicySettings] = useState(false);
+
+  // ==========================================
+  // 🔥 NEW STATES: LIVE CHAT & AUTO SCROLL 🔥
+  // ==========================================
+  const [liveMessages, setLiveMessages] = useState<any[]>([]);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // ==========================================
   // 🔥 NEW STATES: CALENDAR & TIME PICKER 🔥
@@ -102,28 +108,59 @@ export default function OrderDetailsView({
     return 'product_details'; 
   };
 
+  // ==========================================
+  // 🔥 NEW REAL-TIME CHAT FETCH LOGIC 🔥
+  // ==========================================
+  useEffect(() => {
+    if (!selectedOrder?.id || !showChatBox) return;
+
+    const fetchOrderMessages = async () => {
+      const { data, error } = await supabase
+        .from('messages') // 👈 Customer side wali same table
+        .select('*')
+        .eq('order_id', selectedOrder.id)
+        .order('created_at', { ascending: true });
+
+      if (data) setLiveMessages(data);
+    };
+
+    fetchOrderMessages();
+  }, [selectedOrder?.id, showChatBox]);
+
+  useEffect(() => {
+    // Auto-scroll to latest message
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [liveMessages, showChatBox]);
+
   const handleSendReply = async () => {
-    if (!chatMessage.trim() || !selectedOrder) return;
+    if (!chatMessage.trim() || !selectedOrder || isProcessing) return;
     setIsProcessing(true);
-    const tableName = (selectedOrder.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
     
-    let currentMessages = selectedOrder.messages;
-    if (typeof currentMessages === 'string') {
-        try { currentMessages = JSON.parse(currentMessages); } catch(e) { currentMessages = []; }
-    }
-    if (!Array.isArray(currentMessages)) currentMessages = [];
-
-    const newMsg = { sender: 'shop', text: chatMessage, timestamp: new Date().toISOString() };
-    const updatedMessages = [...currentMessages, newMsg];
-
-    setSelectedOrder({ ...selectedOrder, messages: updatedMessages });
-    setOrders((prev: any[]) => prev.map((o:any) => o.id === selectedOrder.id ? { ...o, messages: updatedMessages } : o));
+    const userMsg = chatMessage;
     setChatMessage('');
 
+    const newDbMsg = {
+      order_id: selectedOrder.id,
+      shop_id: currentShop?.id || selectedOrder.shop_id,
+      customer_phone: selectedOrder.user_phone || selectedOrder.phone || selectedOrder.mobile || '',
+      sender_role: 'shop', // 🔥 Identifies shop owner
+      message_text: userMsg,
+      status: 'unread'
+    };
+
+    // 1. Optimistic Update (Turant screen par dikhane ke liye)
+    setLiveMessages(prev => [...prev, newDbMsg]);
+
     try {
-      await supabase.from(tableName).update({ messages: updatedMessages }).eq('id', selectedOrder.id);
-    } catch (err: any) {} 
-    finally { setIsProcessing(false); }
+      // 2. Database me insert
+      const { error } = await supabase.from('messages').insert([newDbMsg]);
+      if (error) throw error;
+    } catch (err: any) {
+      console.error("Chat send error:", err.message);
+      alert("❌ Message nahi ja saka. Internet check karein.");
+    } finally { 
+      setIsProcessing(false); 
+    }
   };
 
   // ==========================================
@@ -185,41 +222,6 @@ export default function OrderDetailsView({
     }
   };
 
-  // Old Prompt based status updates
-  const updateOrderStatus = async (id: number, newStatus: string) => {
-    const orderToUpdate = orders.find((o:any) => o.id === id);
-    if (!orderToUpdate) return;
-    const tableName = (orderToUpdate.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
-    
-    const newShopId = currentShop?.id || orderToUpdate.shop_id; 
-    let newDate = orderToUpdate.estimated_delivery || "";
-
-    if (newStatus === 'accepted' || newStatus === 'out_for_delivery') {
-      const askDate = prompt(
-        "Kripya Delivery ka EXACT DATE aur TIME batayein:\n(Format: 15 August 2026, 04:30 PM)", 
-        newDate || "15 August 2026, 04:30 PM"
-      );
-      if (askDate !== null && askDate.trim() !== "") newDate = askDate;
-      else return; 
-    }
-
-    setIsProcessing(true);
-    setOrders((prev:any[]) => prev.map((o:any) => o.id === id ? { ...o, status: newStatus, shop_id: newShopId, estimated_delivery: newDate } : o));
-    setSelectedOrder((prev: any) => ({ ...prev, status: newStatus, estimated_delivery: newDate }));
-
-    try {
-      const { error } = await supabase.from(tableName).update({ status: newStatus, shop_id: newShopId, estimated_delivery: newDate }).eq('id', id);
-      if (!error) { 
-        fetchOrders(); 
-        if (newStatus === 'accepted' || newStatus === 'out_for_delivery') { 
-          setSelectedOrder(null); 
-          if(setOrderSubTab) setOrderSubTab('local');
-        }
-      } else alert("Error updating order: " + error.message);
-    } catch(e:any) { alert("Error: " + e.message); } 
-    finally { setIsProcessing(false); }
-  };
-
   const markDeliveryFailed = async (orderId: number) => {
     if (!window.confirm("Kya sach mein delivery fail ho gayi hai? Haan karne par yeh order RTO (Return to Origin) list me chala jayega.")) return;
     
@@ -234,25 +236,6 @@ export default function OrderDetailsView({
       setSelectedOrder((prev: any) => ({ ...prev, status: 'RTO Initiated' }));
       alert("⚠️ Order marked as RTO (Delivery Failed). Ab aap ise receive kar sakte hain jab packet wapas aaye.");
     } catch(e:any) { alert(e.message); } 
-    finally { setIsProcessing(false); }
-  };
-
-  const editEntireOrderDeliveryTime = async (orderId: number) => {
-    const orderToUpdate = orders.find((o:any) => o.id === orderId);
-    if (!orderToUpdate) return;
-    const tableName = (orderToUpdate.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
-
-    const newTime = prompt("Naya Delivery Date aur Time dalein:\n(Format: 15 August 2026, 04:30 PM)", selectedOrder?.estimated_delivery || "15 August 2026, 04:30 PM");
-    if (!newTime || newTime.trim() === "") return;
-    
-    setIsProcessing(true);
-    try {
-      const newShopId = currentShop?.id || orderToUpdate.shop_id;
-      setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, estimated_delivery: newTime, shop_id: newShopId } : o));
-      setSelectedOrder((prev: any) => ({ ...prev, estimated_delivery: newTime }));
-      await supabase.from(tableName).update({ estimated_delivery: newTime, shop_id: newShopId }).eq('id', orderId);
-      fetchOrders(); 
-    } catch(e:any) { alert("Error: " + e.message); } 
     finally { setIsProcessing(false); }
   };
 
@@ -693,7 +676,6 @@ export default function OrderDetailsView({
   const isRtoCompleted = s === 'rto received';
 
   const itemsTotalAmt = getShopTotal(selectedOrder);
-  const deliveryAmt = Number(selectedOrder?.delivery_charge || selectedOrder?.shipping_charge || selectedOrder?.shipping_fee || 0);
   
   const shopAdminFee = itemsTotalAmt * ADMIN_COMMISSION_PERCENTAGE;
   const shopEarn = itemsTotalAmt - shopAdminFee;
@@ -1149,7 +1131,9 @@ export default function OrderDetailsView({
         )}
       </div>
 
-      {/* 🔥 NEW: COLLAPSIBLE IN-APP CHAT SECTION 🔥 */}
+      {/* ==========================================
+          🔥 UPDATED: COLLAPSIBLE IN-APP CHAT (REALTIME FETCH) 🔥
+          ========================================== */}
       <div style={{ backgroundColor: '#0f172a', padding: '20px', borderRadius: '12px', border: '1px solid #334155', marginTop: '20px' }}>
         <button 
           onClick={() => setShowChatBox(!showChatBox)}
@@ -1161,25 +1145,53 @@ export default function OrderDetailsView({
 
         {showChatBox && (
           <div style={{ marginTop: '15px' }}>
-            <div style={{ height: '250px', overflowY: 'auto', backgroundColor: '#1e293b', padding: '10px', borderRadius: '8px', marginBottom: '15px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {(() => {
-                let displayMsgs = selectedOrder?.messages;
-                if (typeof displayMsgs === 'string') { try { displayMsgs = JSON.parse(displayMsgs); } catch(e) { displayMsgs = []; } }
-                if (!Array.isArray(displayMsgs)) displayMsgs = [];
-                if (displayMsgs.length === 0) return <p style={{color: '#64748b', textAlign: 'center'}}>No messages yet.</p>;
-
-                return displayMsgs.map((msg: any, idx: number) => (
-                  <div key={idx} style={{ alignSelf: msg.sender === 'shop' || msg.sender === 'admin' ? 'flex-end' : 'flex-start', backgroundColor: msg.sender === 'shop' || msg.sender === 'admin' ? '#10b981' : '#334155', color: 'white', padding: '8px 12px', borderRadius: '8px', maxWidth: '80%', fontSize: '13px' }}>
-                    <div style={{ fontSize: '10px', color: '#e2e8f0', marginBottom: '4px' }}>{msg.sender === 'customer' ? 'Customer' : 'You (Shop)'}</div>
-                    <div>{msg.text}</div>
-                    {msg.imageUrl && <img src={msg.imageUrl} alt="attachment" style={{width: '100%', marginTop: '5px', borderRadius: '4px'}}/>}
-                  </div>
-                ));
-              })()}
+            <div style={{ height: '300px', overflowY: 'auto', backgroundColor: '#1e293b', padding: '15px', borderRadius: '8px', marginBottom: '15px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              
+              {liveMessages.length === 0 ? (
+                <p style={{color: '#64748b', textAlign: 'center'}}>Customer se abhi tak koi baat nahi hui hai.</p>
+              ) : (
+                liveMessages.map((msg: any, idx: number) => {
+                  const isMe = msg.sender_role === 'shop' || msg.sender_role === 'admin';
+                  return (
+                    <div key={idx} style={{ 
+                      alignSelf: isMe ? 'flex-end' : 'flex-start', 
+                      backgroundColor: isMe ? '#10b981' : '#334155', 
+                      color: 'white', 
+                      padding: '10px 14px', 
+                      borderRadius: '12px', 
+                      maxWidth: '80%', 
+                      fontSize: '14px',
+                      boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                    }}>
+                      <div style={{ fontSize: '11px', color: '#e2e8f0', marginBottom: '4px', fontWeight: 'bold' }}>
+                        {isMe ? 'You (Shop)' : 'Customer'}
+                      </div>
+                      <div>{msg.message_text || msg.text}</div>
+                    </div>
+                  );
+                })
+              )}
+              {/* Dummy div to scroll to bottom */}
+              <div ref={messagesEndRef} />
             </div>
+
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-              <input type="text" value={chatMessage} onChange={(e) => setChatMessage(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSendReply()} placeholder="Type a reply to customer..." disabled={isProcessing} style={{ flex: 1, minWidth: '200px', padding: '12px', borderRadius: '6px', border: '1px solid #334155', backgroundColor: '#1e293b', color: 'white', outline: 'none' }} />
-              <button onClick={handleSendReply} disabled={isProcessing} style={{ flex: '0 0 auto', backgroundColor: '#38bdf8', color: '#0f172a', border: 'none', padding: '10px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: isProcessing ? 'wait' : 'pointer' }}>{isProcessing ? '⏳' : 'Send Reply'}</button>
+              <input 
+                 type="text" 
+                 value={chatMessage} 
+                 onChange={(e) => setChatMessage(e.target.value)} 
+                 onKeyDown={(e) => e.key === 'Enter' && handleSendReply()} 
+                 placeholder="Type a reply to customer..." 
+                 disabled={isProcessing} 
+                 style={{ flex: 1, minWidth: '200px', padding: '12px', borderRadius: '6px', border: '1px solid #334155', backgroundColor: '#1e293b', color: 'white', outline: 'none' }} 
+              />
+              <button 
+                 onClick={handleSendReply} 
+                 disabled={isProcessing} 
+                 style={{ flex: '0 0 auto', backgroundColor: '#38bdf8', color: '#0f172a', border: 'none', padding: '10px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: isProcessing ? 'wait' : 'pointer' }}
+              >
+                 {isProcessing ? '⏳ Sending...' : 'Send Reply'}
+              </button>
             </div>
           </div>
         )}
