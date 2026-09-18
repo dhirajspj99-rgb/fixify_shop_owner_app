@@ -3,8 +3,11 @@ import React, { useState } from 'react';
 import { supabase } from '@/lib/supabaseClient'; 
 import PermanentFreeCall from '@/components/PermanentFreeCall';
 import { printShopInvoice, printDeliveryChallan, printMiniChallan } from './InvoiceHelper'; 
-// 🔥 IMPORT YOUR NEW ACCEPT BUTTON COMPONENT HERE
+
+// 🔥 IMPORT YOUR NEW BUTTON COMPONENTS HERE 🔥
 import AcceptOrderButton from './AcceptOrderButton'; 
+import RescheduleButton from './RescheduleButton';
+import OutForDeliveryButton from './OutForDeliveryButton';
 
 const ADMIN_COMMISSION_PERCENTAGE = 0.05;
 
@@ -18,7 +21,7 @@ export default function OrderDetailsView({
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // 🔥 NEW STATES FOR COLLAPSIBLE SECTIONS
+  // 🔥 STATES FOR COLLAPSIBLE SECTIONS
   const [showChatBox, setShowChatBox] = useState(false);
   const [showReturnPolicySettings, setShowReturnPolicySettings] = useState(false);
 
@@ -124,15 +127,6 @@ export default function OrderDetailsView({
     const newShopId = currentShop?.id || orderToUpdate.shop_id; 
     let newDate = orderToUpdate.estimated_delivery || "";
 
-    if (newStatus === 'accepted' || newStatus === 'out_for_delivery') {
-      const askDate = prompt(
-        "Kripya Delivery ka EXACT DATE aur TIME batayein:\n(Format: 15 August 2026, 04:30 PM)", 
-        newDate || "15 August 2026, 04:30 PM"
-      );
-      if (askDate !== null && askDate.trim() !== "") newDate = askDate;
-      else return; 
-    }
-
     setIsProcessing(true);
     setOrders((prev:any[]) => prev.map((o:any) => o.id === id ? { ...o, status: newStatus, shop_id: newShopId, estimated_delivery: newDate } : o));
     setSelectedOrder((prev: any) => ({ ...prev, status: newStatus, estimated_delivery: newDate }));
@@ -164,25 +158,6 @@ export default function OrderDetailsView({
       setSelectedOrder((prev: any) => ({ ...prev, status: 'RTO Initiated' }));
       alert("⚠️ Order marked as RTO (Delivery Failed). Ab aap ise receive kar sakte hain jab packet wapas aaye.");
     } catch(e:any) { alert(e.message); } 
-    finally { setIsProcessing(false); }
-  };
-
-  const editEntireOrderDeliveryTime = async (orderId: number) => {
-    const orderToUpdate = orders.find((o:any) => o.id === orderId);
-    if (!orderToUpdate) return;
-    const tableName = (orderToUpdate.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
-
-    const newTime = prompt("Naya Delivery Date aur Time dalein:\n(Format: 15 August 2026, 04:30 PM)", selectedOrder?.estimated_delivery || "15 August 2026, 04:30 PM");
-    if (!newTime || newTime.trim() === "") return;
-    
-    setIsProcessing(true);
-    try {
-      const newShopId = currentShop?.id || orderToUpdate.shop_id;
-      setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, estimated_delivery: newTime, shop_id: newShopId } : o));
-      setSelectedOrder((prev: any) => ({ ...prev, estimated_delivery: newTime }));
-      await supabase.from(tableName).update({ estimated_delivery: newTime, shop_id: newShopId }).eq('id', orderId);
-      fetchOrders(); 
-    } catch(e:any) { alert("Error: " + e.message); } 
     finally { setIsProcessing(false); }
   };
 
@@ -623,7 +598,6 @@ export default function OrderDetailsView({
   const isRtoCompleted = s === 'rto received';
 
   const itemsTotalAmt = getShopTotal(selectedOrder);
-  const deliveryAmt = Number(selectedOrder?.delivery_charge || selectedOrder?.shipping_charge || selectedOrder?.shipping_fee || 0);
   
   const shopAdminFee = itemsTotalAmt * ADMIN_COMMISSION_PERCENTAGE;
   const shopEarn = itemsTotalAmt - shopAdminFee;
@@ -1010,7 +984,7 @@ export default function OrderDetailsView({
         
         {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
           <>
-            {/* 🔥 NEW ACCEPT BUTTON (WITH UPI LOCK) 🔥 */}
+            {/* 🔥 NEW ACCEPT BUTTON (WITH CALENDAR) 🔥 */}
             <AcceptOrderButton 
               orderId={selectedOrder.id} 
               currentStatus={selectedOrder.status} 
@@ -1020,7 +994,12 @@ export default function OrderDetailsView({
             />
             
             <button onClick={() => sendToCustomerApproval(selectedOrder.id)} style={{ ...actionBtnStyle, backgroundColor: '#f59e0b' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '⚠️ Send to Customer Approval'}</button>
-            <button onClick={() => updateOrderStatus(selectedOrder.id, 'out_for_delivery')} style={{ ...actionBtnStyle, backgroundColor: '#a855f7' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '🛵 Mark Out for Delivery'}</button>
+            
+            {/* 🔥 NEW OUT FOR DELIVERY BUTTON (WITH CALENDAR) 🔥 */}
+            <OutForDeliveryButton 
+              orderId={selectedOrder.id} 
+              onStatusChange={fetchOrders} 
+            />
           </>
         )}
 
@@ -1032,7 +1011,11 @@ export default function OrderDetailsView({
         )}
         
         {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
-          <button onClick={() => editEntireOrderDeliveryTime(selectedOrder.id)} style={{ ...actionBtnStyle, backgroundColor: '#6366f1' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '⏱️ Reschedule Delivery Date/Time'}</button>
+          /* 🔥 NEW RESCHEDULE BUTTON (WITH CALENDAR) 🔥 */
+          <RescheduleButton 
+            orderId={selectedOrder.id} 
+            onStatusChange={fetchOrders} 
+          />
         )}
         
         {(s === 'out_for_delivery' || s.includes('out') || s.includes('transit')) && (
