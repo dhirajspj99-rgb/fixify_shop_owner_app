@@ -54,6 +54,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           name="viewport" 
           content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" 
         />
+        {/* 🔥 Icon update code added here */}
+        <link rel="icon" type="image/png" href="/icon.png" />
+        <link rel="apple-touch-icon" href="/icon.png" />
+        <link rel="shortcut icon" href="/icon.png" />
       </head>
       <body style={{ 
         margin: 0, 

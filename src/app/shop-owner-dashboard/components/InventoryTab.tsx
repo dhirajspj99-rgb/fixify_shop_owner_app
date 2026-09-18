@@ -17,6 +17,9 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
   const [returnPolicy, setReturnPolicy] = useState('No Return'); 
   const [isCodAvailable, setIsCodAvailable] = useState(true); 
   
+  // 🔥 डिस्क्रिप्शन / स्पेसिफिकेशन स्टेट
+  const [description, setDescription] = useState('');
+
   // 🔥 NEW STATES FOR MULTIPLE SIZES/VARIANTS 🔥
   const [hasVariants, setHasVariants] = useState(false);
   const [variants, setVariants] = useState([{ name: '', price: '', stock: '' }]);
@@ -45,6 +48,40 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
          setUnit('Pc'); 
       }
   }, [category]);
+
+  // कैटेगरी के अनुसार ऑटोमैटिक स्पेसिफिकेशन टेम्पलेट तैयार करने का फंक्शन
+  const getCategoryTemplate = (cat: string) => {
+    const c = (cat || '').toLowerCase();
+    if (c.includes('mobile') || c.includes('camera')) {
+      return `• Model Name: \n• RAM / ROM: \n• Camera: \n• Battery: \n• Processor & Display: \n• In The Box: Handset, Charger, Cable\n• Warranty: 1 Year Manufacturer Warranty`;
+    }
+    if (c.includes('laptop') || c.includes('printer')) {
+      return `• Brand & Model: \n• Processor (CPU): \n• RAM & SSD/HDD: \n• Graphics & OS: \n• Screen Size & Display: \n• Battery Backup: \n• Warranty: 1 Year Warranty`;
+    }
+    if (c.includes('fashion') || c.includes('cloth') || c.includes('design')) {
+      return `• Fabric / Material: Pure Cotton\n• Saree / Cloth Length: 5.5 Mtr (+ 0.8 Mtr Blouse Piece)\n• Pattern / Print: \n• Occasion: Casual / Party Wear\n• Wash Care: Hand Wash / Machine Wash\n• Package Contains: 1 Piece`;
+    }
+    if (c.includes('iron') || c.includes('steel') || c.includes('aluminium')) {
+      return `• Brand / Make: \n• Gauge / Thickness: \n• Length & Dimensions: \n• Weight / Unit: \n• Corrosion Resistance: Yes\n• Application: Building & Construction`;
+    }
+    if (c.includes('cement')) {
+      return `• Brand Name: \n• Grade (OPC / PPC): \n• Packaging: 50 Kg Moisture Proof Bag\n• Setting Time: Fast Setting\n• Best For: Slabs, Pillars & Foundation`;
+    }
+    if (c.includes('vehicle')) {
+      return `• Model & Year: \n• Fuel Type: Petrol / Diesel\n• KM Driven: \n• Ownership: 1st Owner\n• Insurance Valid Till: \n• Condition: Excellent Engine & Body`;
+    }
+    return `• Brand / Manufacturer: \n• Key Features: \n• Material / Quality: \n• Net Quantity: \n• Usage & Storage: \n• Guarantee / Warranty: `;
+  };
+
+  const applyAutoTemplate = (isEdit: boolean = false) => {
+    const cat = isEdit ? editProduct.category : category;
+    const template = getCategoryTemplate(cat);
+    if (isEdit) {
+      setEditProduct({ ...editProduct, description: template });
+    } else {
+      setDescription(template);
+    }
+  };
 
   const myShopProducts = (products || []).filter((p: any) => safeShopId && String(p.shop_id) === safeShopId);
   const myProductNames = new Set(myShopProducts.map((p: any) => p.name.toLowerCase()));
@@ -150,7 +187,8 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
 
     const { error } = await supabase.from('products').insert([{ 
       shop_id: safeShopId || null, 
-      name: finalName, category: finalCategory, 
+      name: finalName, 
+      category: finalCategory, 
       price: finalPrice, 
       total_stock: finalStock, 
       sold_quantity: 0, 
@@ -159,7 +197,8 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
       is_heavy: isHeavy,
       return_policy: returnPolicy,
       is_cod_available: isCodAvailable,
-      variants: finalVariantsJSON 
+      variants: finalVariantsJSON,
+      description: description.trim() // 🔥 5-10 लाइन की पूरी डिटेल्स
     }]);
 
     if (error) alert("Error adding product: " + error.message);
@@ -169,6 +208,7 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
     setReturnPolicy('No Return'); setIsCodAvailable(true);
     setCondition('New'); setNewCustomCategory(''); setImageFiles([]); setIsHeavy(false);
     setHasVariants(false); setVariants([{ name: '', price: '', stock: '' }]);
+    setDescription('');
   };
 
   const saveEditedProduct = async () => {
@@ -210,13 +250,16 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
       }
     }
 
+    const finalEditDescription = editProduct.description ? editProduct.description.trim() : '';
+
     if (!editProduct.shop_id) {
        const { error: masterError } = await supabase.from('products').update({ 
          name: editProduct.name, category: finalEditCategory, 
          price: finalPrice, 
          image_url: finalImageUrlString,
          unit: finalUnit, is_heavy: editProduct.is_heavy, return_policy: finalReturnPolicy,
-         is_cod_available: finalCodStatus, variants: finalVariantsJSON
+         is_cod_available: finalCodStatus, variants: finalVariantsJSON,
+         description: finalEditDescription
        }).eq('id', editProduct.id);
 
        if (masterError) {
@@ -231,7 +274,8 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
              price: finalPrice, total_stock: finalStock, sold_quantity: 0, 
              unit: finalUnit, image_url: finalImageUrlString,
              is_heavy: editProduct.is_heavy, return_policy: finalReturnPolicy,
-             is_cod_available: finalCodStatus, variants: finalVariantsJSON
+             is_cod_available: finalCodStatus, variants: finalVariantsJSON,
+             description: finalEditDescription
            }]);
            if (shopError) alert("Stock save error: " + shopError.message);
            else alert("✅ Product aapke Stock Room me Add ho gaya!");
@@ -245,7 +289,8 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
          price: finalPrice, total_stock: finalStock, 
          unit: finalUnit, image_url: finalImageUrlString,
          is_heavy: editProduct.is_heavy, return_policy: finalReturnPolicy,
-         is_cod_available: finalCodStatus, variants: finalVariantsJSON
+         is_cod_available: finalCodStatus, variants: finalVariantsJSON,
+         description: finalEditDescription
        }).eq('id', editProduct.id);
        
        if (error) alert("Error updating product: " + error.message);
@@ -264,7 +309,6 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
     fetchProducts();
   };
 
-  // 🔥 FULL FUNCTION RESTORED 🔥
   const deleteHeavyItems = async () => {
     if (!window.confirm("🚨 WARNING: Kya aap sach mein sabhi HEAVY ITEMS ko database se delete karna chahte hain?")) return;
 
@@ -286,7 +330,6 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
     }
   };
 
-  // 🔥 FULL FUNCTION RESTORED 🔥
   const generateBulkDemoProducts = async () => {
     const targetCategory = selectedInvCategory === 'All Categories' ? 'General Store' : selectedInvCategory;
     if (!window.confirm(`Kya aap ${targetCategory} category mein demo items generate karna chahte hain?`)) return;
@@ -312,7 +355,8 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
             image_url: getAutoImagesArray(targetCategory).join(','),
             is_heavy: isTargetHeavy,
             return_policy: 'No Return',
-            is_cod_available: true 
+            is_cod_available: true,
+            description: `Official ${targetCategory} standard item. High durability and certified quality for home and industrial use.`
         });
     }
 
@@ -364,7 +408,7 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
         <div style={{marginTop:'15px', border:'1px solid #38bdf8', padding:'20px', borderRadius:'12px', backgroundColor: '#0f172a', marginBottom: '20px'}}>
           <h3 style={{ color: '#38bdf8', marginTop: 0 }}>📦 Add Inventory Item</h3>
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-            <input placeholder="Product Name (E.g. Kurti, Iron Pipe)" onChange={e => setName(e.target.value)} value={name} style={{...inputStyle, flex: 2, minWidth: '200px'}} />
+            <input placeholder="Product Name (E.g. Kurti, Iron Pipe, Realme 12 Pro)" onChange={e => setName(e.target.value)} value={name} style={{...inputStyle, flex: 2, minWidth: '200px'}} />
             <select onChange={e => setCondition(e.target.value)} value={condition} style={{...inputStyle, flex: 1, minWidth: '150px'}}><option value="New">✨ Brand New</option><option value="Used">♻️ Second Hand</option></select>
           </div>
           
@@ -374,6 +418,33 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
               <option value="Custom" style={{fontWeight: 'bold', color: '#10b981'}}>+ Create New Category</option>
             </select>
             {category === 'Custom' && <input placeholder="Enter new category name..." value={newCustomCategory} onChange={e => setNewCustomCategory(e.target.value)} style={{...inputStyle, flex: 1, border: '1px solid #10b981', minWidth: '200px'}} />}
+          </div>
+
+          {/* 🔥 PRODUCT DESCRIPTION & AUTO-SPECS BUILDER 🔥 */}
+          <div style={{ marginTop: '15px', padding: '15px', backgroundColor: '#1e293b', borderRadius: '8px', border: '1px solid #334155' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '10px' }}>
+              <label style={{ color: '#38bdf8', fontSize: '13px', fontWeight: 'bold' }}>
+                📋 Product Description & Details (5-10 Lines)
+              </label>
+              <button 
+                type="button" 
+                onClick={() => applyAutoTemplate(false)}
+                style={{ background: '#0284c7', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
+              >
+                ⚡ Auto-Fill Specs Template ({category})
+              </button>
+            </div>
+            
+            <textarea 
+              rows={7} 
+              placeholder={`Product ki poori khasiyat likhein jaise:\n- RAM, Storage, Battery, Camera (Mobiles ke liye)\n- Fabric, Length, Occasion (Kapde / Sari ke liye)\n- Gauge, Quality, Weight (Building material ke liye)...`} 
+              value={description} 
+              onChange={e => setDescription(e.target.value)} 
+              style={{ ...inputStyle, fontFamily: 'inherit', lineHeight: '1.6', resize: 'vertical' }}
+            />
+            <p style={{ fontSize: '11px', color: '#94a3b8', margin: '4px 0 0 0' }}>
+              💡 Tip: ग्राहक को प्रोडक्ट की पूरी जानकारी मिलने पर बिक्री 3 गुना बढ़ जाती है।
+            </p>
           </div>
 
           {/* 🔥 MULTIPLE SIZES TOGGLE 🔥 */}
@@ -399,7 +470,7 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
               <p style={{ fontSize: '11px', color: '#94a3b8', marginTop: '10px' }}>* Total stock apne aap calculate ho jayega.</p>
             </div>
           ) : (
-            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '10px' }}>
               <input type="number" placeholder="Single Price (₹)" onChange={e => setPrice(e.target.value)} value={price} style={{...inputStyle, flex: 1, minWidth: '120px'}} />
               
               {(category.toLowerCase().includes('iron') || category.toLowerCase().includes('steel')) ? (
@@ -481,9 +552,9 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
       {/* 🔥 EDIT/ADD STOCK POPUP 🔥 */}
       {editProduct && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000, padding: '20px' }}>
-          <div style={{ backgroundColor: '#0f172a', padding: '25px', borderRadius: '12px', width: '100%', maxWidth: '450px', border: '1px solid #38bdf8', maxHeight: '90vh', overflowY: 'auto' }}>
+          <div style={{ backgroundColor: '#0f172a', padding: '25px', borderRadius: '12px', width: '100%', maxWidth: '500px', border: '1px solid #38bdf8', maxHeight: '90vh', overflowY: 'auto' }}>
             <h3 style={{ color: '#10b981', marginTop: 0, borderBottom: '1px solid #334155', paddingBottom: '10px' }}>
-              {editProduct.shop_id ? '✏️ Edit Stock / Sizes' : '📥 Edit Master & Add'}
+              {editProduct.shop_id ? '✏️ Edit Stock / Details' : '📥 Edit Master & Add'}
             </h3>
             
             <label style={{color: '#94a3b8', fontSize: '12px'}}>Product Name</label>
@@ -493,6 +564,29 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
             <select value={editProduct.category} onChange={e => setEditProduct({...editProduct, category: e.target.value})} style={inputStyle}>
               {allCategories.filter(c => c !== 'All Categories').map(c => <option key={c as string} value={c as string}>{c as string}</option>)}
             </select>
+
+            {/* EDIT DESCRIPTION SECTION */}
+            <div style={{ marginTop: '12px', padding: '12px', backgroundColor: '#1e293b', borderRadius: '8px', border: '1px solid #334155' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <label style={{ color: '#38bdf8', fontSize: '12px', fontWeight: 'bold' }}>
+                  📋 Product Details (5-10 Lines)
+                </label>
+                <button 
+                  type="button" 
+                  onClick={() => applyAutoTemplate(true)}
+                  style={{ background: '#0284c7', color: 'white', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '11px', fontWeight: 'bold' }}
+                >
+                  ⚡ Fill Specs Template
+                </button>
+              </div>
+              <textarea 
+                rows={6}
+                value={editProduct.description || ''} 
+                onChange={e => setEditProduct({ ...editProduct, description: e.target.value })} 
+                placeholder="Product specifications, RAM, size, fabric, etc..."
+                style={{ ...inputStyle, fontFamily: 'inherit', lineHeight: '1.5', margin: 0, resize: 'vertical' }}
+              />
+            </div>
 
             {/* SIZES IN EDIT MODE */}
             <div style={{ marginTop: '15px', marginBottom: '10px', padding: '10px', backgroundColor: '#1e293b', borderRadius: '8px' }}>
@@ -649,6 +743,13 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
                     </div>
                   )}
 
+                  {/* DESCRIPTION PREVIEW SNIPPET */}
+                  {p.description && (
+                    <div style={{ color: '#64748b', fontSize: '11px', marginTop: '3px', fontStyle: 'italic', maxWidth: '350px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      📝 {p.description}
+                    </div>
+                  )}
+
                   <div style={{color: '#e2e8f0', fontWeight: 'bold', marginTop: '4px', fontSize: '13px'}}>
                       {isMultiSize ? 'Starts from ' : ''}₹{p.price} <span style={{color:'#facc15'}}>/ {itemUnit}</span> | Stock: <span style={{color: hasStock ? '#4ade80' : '#f87171'}}>{p.total_stock || 0}</span>
                   </div>
@@ -656,7 +757,12 @@ export default function InventoryTab({ products, fetchProducts, currentShop }: a
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', minWidth: '80px' }}>
                 <button onClick={() => {
-                   setEditProduct({...p, hasVariants: isMultiSize, variants: isMultiSize ? parsedVariants : []});
+                   setEditProduct({
+                     ...p, 
+                     hasVariants: isMultiSize, 
+                     variants: isMultiSize ? parsedVariants : [],
+                     description: p.description || ''
+                   });
                 }} style={{...editBtn, backgroundColor: hasStock ? '#3b82f6' : '#10b981', padding: '10px 15px'}}>
                    {hasStock ? '✏️ Edit Stock' : '➕ Add to Stock'}
                 </button>
