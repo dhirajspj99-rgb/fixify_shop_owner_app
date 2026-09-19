@@ -5,7 +5,7 @@ import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  // 🔥 Toast dikhane ke liye naya state
+  // 🔥 Toast dikhane ke liye state
   const [showToast, setShowToast] = useState(false);
 
   useEffect(() => {
@@ -54,10 +54,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           name="viewport" 
           content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" 
         />
-        {/* 🔥 ULTIMATE TRICK: Humne file ka naam hi badal diya taaki purana cache kaam na kare */}
-        <link rel="icon" type="image/png" href="/mylogo.png" />
-        <link rel="apple-touch-icon" href="/mylogo.png" />
-        <link rel="shortcut icon" href="/mylogo.png" />
+        {/* 🔥 FIX: Aapke public folder mein 'icon.png' hai, isliye yahan wahi naam set kiya hai */}
+        <link rel="icon" type="image/png" href="/icon.png" />
+        <link rel="apple-touch-icon" href="/icon.png" />
+        <link rel="shortcut icon" href="/icon.png" />
       </head>
       <body style={{ 
         margin: 0, 
@@ -70,7 +70,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         boxSizing: 'border-box'
       }}>
         
-        {/* 🔥 NAYA TOAST MESSAGE UI 🔥 */}
+        {/* 🔥 TOAST MESSAGE UI 🔥 */}
         {showToast && (
           <div style={{
             position: 'fixed',
