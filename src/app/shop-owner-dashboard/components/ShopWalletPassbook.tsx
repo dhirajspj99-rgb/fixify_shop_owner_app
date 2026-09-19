@@ -14,6 +14,12 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
   const [withdrawAmount, setWithdrawAmount] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState(false);
 
+  // 🔥 NAYA: Search State (Order No ya Token No se search karne ke liye)
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Detailed Modal State
+  const [selectedTxnDetails, setSelectedTxnDetails] = useState<any>(null);
+
   useEffect(() => {
     if (shopUser?.id) {
       fetchShopWalletData();
@@ -48,8 +54,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
       const { data: walletData, error: walletError } = await supabase
         .from('wallet_transactions')
         .select('*')
-        .eq('shop_id', shopUser.id)
-        .eq('type', 'debit');
+        .eq('shop_id', shopUser.id);
         
       if (walletError) {
         console.warn("Wallet Txn Fetch Error:", walletError);
@@ -69,7 +74,9 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
             amount: netEarning,
             reason: `Order Sales Earning #${o.order_no || o.id}`,
             created_at: o.created_at,
-            status: 'completed'
+            status: 'completed',
+            raw_data: o,
+            search_key: `${o.order_no || ''} ${o.id}`.toLowerCase()
           });
         }
       });
@@ -78,11 +85,13 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
         unifiedLedger.push({
           id: 'txn_' + w.id,
           real_id: w.id,
-          type: 'debit',
+          type: w.type,
           amount: Number(w.amount),
           reason: w.reason || 'Withdrawal Request',
           created_at: w.created_at,
-          status: w.status
+          status: w.status,
+          raw_data: w,
+          search_key: `txn-${w.id} ${w.utr_no || ''}`.toLowerCase()
         });
       });
 
@@ -90,15 +99,11 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
 
       let tBal = 0;
       let wBal = 0;
-      const now = new Date();
 
       unifiedLedger.forEach(txn => {
         if (txn.type === 'credit') {
           tBal += txn.amount;
-          
-          // 🔥 BYPASS: 7 Days Ka Lock Hata Diya Gaya Hai Testing Ke Liye 🔥
-          wBal += txn.amount; // Saara paisa turant withdrawable mein add hoga
-          
+          wBal += txn.amount; 
         } else if (txn.type === 'debit') {
           if (txn.status === 'completed' || txn.status === 'pending') {
             tBal -= txn.amount;
@@ -151,11 +156,22 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
 
   const pendingClearance = Math.max(0, totalBalance - withdrawableBalance);
 
+  // 🔥 FILTER TRANSACTIONS BASED ON SEARCH QUERY (Order No / Token No / UTR)
+  const filteredTransactions = transactions.filter((txn: any) => {
+    if (!searchQuery.trim()) return true;
+    const query = searchQuery.toLowerCase().trim();
+    return (
+      txn.search_key.includes(query) ||
+      txn.reason.toLowerCase().includes(query) ||
+      String(txn.amount).includes(query)
+    );
+  });
+
   return (
     <div style={{ maxWidth: '800px', margin: '0 auto', background: '#f8fafc', minHeight: '100vh', fontFamily: 'Inter, sans-serif', padding: '20px' }}>
       
       <div style={{ background: '#0f172a', padding: '15px 20px', color: 'white', display: 'flex', alignItems: 'center', gap: '15px', borderRadius: '12px', marginBottom: '20px' }}>
-        <button onClick={() => setAppStep('home')} style={{ background: 'transparent', border: 'none', color: 'white', fontSize: '20px', cursor: 'pointer' }}>←</button>
+        <button onClick={() => setAppStep('sales')} style={{ background: 'transparent', border: 'none', color: 'white', fontSize: '20px', cursor: 'pointer' }}>←</button>
         <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '800' }}>Shop Owner Wallet</h2>
       </div>
 
@@ -163,7 +179,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '20px' }}>
           
           <div style={{ flex: '1 1 250px' }}>
-            <p style={{ margin: '0 0 5px 0', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '1px', color: '#cbd5e1' }}>Available to Withdraw (Test Mode Active)</p>
+            <p style={{ margin: '0 0 5px 0', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '1px', color: '#cbd5e1' }}>Available to Withdraw</p>
             <h1 style={{ margin: 0, fontSize: '42px', fontWeight: '900', color: '#10b981' }}>
               ₹{withdrawableBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
             </h1>
@@ -183,7 +199,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
               <h3 style={{ margin: 0, fontSize: '24px', color: '#f8fafc' }}>₹{totalBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h3>
             </div>
             <div style={{ borderTop: '1px dashed #334155', paddingTop: '10px' }}>
-              <p style={{ margin: '0 0 2px 0', fontSize: '12px', color: '#f59e0b' }}>Pending Clearance (Testing)</p>
+              <p style={{ margin: '0 0 2px 0', fontSize: '12px', color: '#f59e0b' }}>Pending Clearance</p>
               <h3 style={{ margin: 0, fontSize: '18px', color: '#fcd34d' }}>₹{pendingClearance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h3>
             </div>
           </div>
@@ -191,8 +207,30 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
         </div>
       </div>
 
+      {/* 🔥 NAYA: SEARCH BOX FOR LEDGER HISTORY 🔥 */}
+      <div style={{ marginBottom: '20px' }}>
+        <input 
+          type="text"
+          placeholder="🔍 Search by Order No (#FIX...) or Withdrawal Token (TXN-...), UTR..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          style={{
+            width: '100%',
+            padding: '14px 18px',
+            borderRadius: '10px',
+            border: '2px solid #0284c7',
+            background: 'white',
+            color: '#0f172a',
+            fontSize: '14px',
+            outline: 'none',
+            boxSizing: 'border-box',
+            boxShadow: '0 2px 5px rgba(0,0,0,0.05)'
+          }}
+        />
+      </div>
+
       <div onClick={() => setIsHistoryOpen(!isHistoryOpen)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px', cursor: 'pointer', userSelect: 'none' }}>
-        <h3 style={{ margin: 0, fontSize: '18px', color: '#0f172a' }}>📜 Wallet Ledger History</h3>
+        <h3 style={{ margin: 0, fontSize: '18px', color: '#0f172a' }}>📜 Ledger History ({filteredTransactions.length})</h3>
         <span style={{ fontSize: '14px', color: '#0284c7', fontWeight: 'bold' }}>{isHistoryOpen ? '▲ Hide' : '▼ View'}</span>
       </div>
 
@@ -200,11 +238,11 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
         <div>
           {isLoading ? (
             <p style={{ textAlign: 'center', color: '#64748b' }}>Loading history...</p>
-          ) : transactions.length === 0 ? (
-            <p style={{ textAlign: 'center', color: '#64748b', padding: '20px' }}>No transactions found.</p>
+          ) : filteredTransactions.length === 0 ? (
+            <p style={{ textAlign: 'center', color: '#64748b', padding: '20px' }}>Koi transaction ya order nahi mila is search par.</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {transactions.slice(0, visibleCount).map((txn: any) => {
+              {filteredTransactions.slice(0, visibleCount).map((txn: any) => {
                 const isCredit = txn.type === 'credit';
                 let amountColor = isCredit ? '#10b981' : '#ef4444';
                 let icon = isCredit ? '💰' : '📉';
@@ -215,10 +253,15 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
                 }
 
                 return (
-                  <div key={txn.id} style={{ background: 'white', padding: '15px', borderRadius: '10px', border: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div 
+                    key={txn.id} 
+                    onClick={() => setSelectedTxnDetails(txn)}
+                    style={{ background: 'white', padding: '15px', borderRadius: '10px', border: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', transition: '0.2s', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}
+                    title="Click to view full details"
+                  >
                     <div style={{ flex: 1 }}>
-                      <h4 style={{ margin: '0 0 5px 0', fontSize: '14px', color: '#1e293b', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span>{icon}</span> {txn.reason}
+                      <h4 style={{ margin: '0 0 5px 0', fontSize: '14px', color: '#1e293b', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span>{icon}</span> {txn.reason} <span style={{ fontSize: '11px', background: '#e0f2fe', color: '#0369a1', padding: '2px 6px', borderRadius: '4px' }}>Tap for details ➡️</span>
                       </h4>
                       <p style={{ margin: 0, fontSize: '12px', color: '#64748b' }}>
                         {new Date(txn.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} 
@@ -233,7 +276,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
                 );
               })}
 
-              {transactions.length > visibleCount && (
+              {filteredTransactions.length > visibleCount && (
                 <button 
                   onClick={() => setVisibleCount(visibleCount + 10)}
                   style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', padding: '12px', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', marginTop: '10px', color: '#334155' }}
@@ -246,6 +289,94 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
         </div>
       )}
 
+      {/* TRANSACTION / ORDER DETAILS MODAL */}
+      {selectedTxnDetails && (
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(15, 23, 42, 0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 99999, padding: '15px' }}>
+          <div style={{ background: 'white', width: '100%', maxWidth: '500px', borderRadius: '16px', padding: '25px', maxHeight: '90vh', overflowY: 'auto', boxSizing: 'border-box' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid #e2e8f0', paddingBottom: '10px' }}>
+              <h3 style={{ margin: 0, fontSize: '18px', color: '#0f172a' }}>📋 Transaction & Order Details</h3>
+              <button onClick={() => setSelectedTxnDetails(null)} style={{ background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '30px', height: '30px', fontSize: '16px', cursor: 'pointer', color: '#64748b' }}>✕</button>
+            </div>
+
+            {selectedTxnDetails.type === 'credit' ? (
+              <div>
+                <div style={{ background: '#f8fafc', padding: '15px', borderRadius: '10px', marginBottom: '15px', border: '1px solid #e2e8f0' }}>
+                  <p style={{ margin: '0 0 5px 0', fontSize: '12px', color: '#64748b' }}>Order ID / Number</p>
+                  <h4 style={{ margin: 0, color: '#0284c7' }}>#{selectedTxnDetails.raw_data.order_no || selectedTxnDetails.raw_data.id}</h4>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '15px' }}>
+                  <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                    <p style={{ margin: '0 0 2px 0', fontSize: '11px', color: '#64748b' }}>Customer Name</p>
+                    <strong style={{ fontSize: '14px', color: '#1e293b' }}>{selectedTxnDetails.raw_data.customer_name || selectedTxnDetails.raw_data.name || 'N/A'}</strong>
+                  </div>
+                  <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                    <p style={{ margin: '0 0 2px 0', fontSize: '11px', color: '#64748b' }}>Phone Number</p>
+                    <strong style={{ fontSize: '14px', color: '#1e293b' }}>{selectedTxnDetails.raw_data.phone || selectedTxnDetails.raw_data.user_phone || 'N/A'}</strong>
+                  </div>
+                </div>
+
+                <div style={{ background: '#f8fafc', padding: '15px', borderRadius: '10px', marginBottom: '15px', border: '1px solid #e2e8f0' }}>
+                  <p style={{ margin: '0 0 5px 0', fontSize: '12px', color: '#64748b' }}>Financial Breakdown</p>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', margin: '4px 0' }}>
+                    <span>Total Bill Amount:</span>
+                    <strong>₹{selectedTxnDetails.raw_data.total_amount}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', margin: '4px 0', color: '#ef4444' }}>
+                    <span>Admin Commission (5%):</span>
+                    <strong>- ₹{(selectedTxnDetails.amount * 0.05).toFixed(2)}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', margin: '8px 0 0 0', paddingTop: '8px', borderTop: '1px dashed #cbd5e1', color: '#10b981' }}>
+                    <strong>Net Credited to Wallet:</strong>
+                    <strong>+ ₹{selectedTxnDetails.amount.toFixed(2)}</strong>
+                  </div>
+                </div>
+
+                <div style={{ background: '#f8fafc', padding: '15px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                  <p style={{ margin: '0 0 2px 0', fontSize: '11px', color: '#64748b' }}>Order Date & Time</p>
+                  <span style={{ fontSize: '13px', color: '#334155' }}>{new Date(selectedTxnDetails.created_at).toLocaleString('en-IN')}</span>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ background: '#fef2f2', padding: '15px', borderRadius: '10px', marginBottom: '15px', border: '1px solid #fecaca' }}>
+                  <p style={{ margin: '0 0 5px 0', fontSize: '12px', color: '#991b1b' }}>Withdrawal Token ID</p>
+                  <h4 style={{ margin: 0, color: '#b91c1c' }}>#TXN-{selectedTxnDetails.raw_data.id}</h4>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '15px' }}>
+                  <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                    <p style={{ margin: '0 0 2px 0', fontSize: '11px', color: '#64748b' }}>Requested Amount</p>
+                    <strong style={{ fontSize: '16px', color: '#ef4444' }}>₹{selectedTxnDetails.amount.toFixed(2)}</strong>
+                  </div>
+                  <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                    <p style={{ margin: '0 0 2px 0', fontSize: '11px', color: '#64748b' }}>Request Status</p>
+                    <strong style={{ fontSize: '14px', color: selectedTxnDetails.status === 'completed' ? '#10b981' : '#f59e0b' }}>{selectedTxnDetails.status.toUpperCase()}</strong>
+                  </div>
+                </div>
+
+                {selectedTxnDetails.raw_data.utr_no && (
+                  <div style={{ background: '#f0fdf4', padding: '12px', borderRadius: '8px', border: '1px solid #bbf7d0', marginBottom: '15px' }}>
+                    <p style={{ margin: '0 0 2px 0', fontSize: '11px', color: '#166534' }}>Bank UTR / Transaction Reference No.</p>
+                    <strong style={{ fontSize: '15px', color: '#15803d' }}>{selectedTxnDetails.raw_data.utr_no}</strong>
+                  </div>
+                )}
+
+                <div style={{ background: '#f8fafc', padding: '15px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                  <p style={{ margin: '0 0 2px 0', fontSize: '11px', color: '#64748b' }}>Request Date & Time</p>
+                  <span style={{ fontSize: '13px', color: '#334155' }}>{new Date(selectedTxnDetails.created_at).toLocaleString('en-IN')}</span>
+                </div>
+              </div>
+            )}
+
+            <button onClick={() => setSelectedTxnDetails(null)} style={{ width: '100%', marginTop: '20px', padding: '12px', background: '#0f172a', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
+              Close Details
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* WITHDRAW MODAL */}
       {showWithdraw && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(15, 23, 42, 0.85)', display: 'flex', justifyContent: 'center', alignItems: 'flex-end', zIndex: 9999 }}>
           <div style={{ background: 'white', width: '100%', maxWidth: '500px', borderTopLeftRadius: '20px', borderTopRightRadius: '20px', padding: '25px' }}>
