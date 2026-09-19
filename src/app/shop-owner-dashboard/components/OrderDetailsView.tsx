@@ -109,22 +109,50 @@ export default function OrderDetailsView({
   };
 
   // ==========================================
-  // 🔥 NEW REAL-TIME CHAT FETCH LOGIC 🔥
+  // 🔥 REAL-TIME CHAT LOGIC (Matches Customer App) 🔥
   // ==========================================
+  
+  // 1. Initial Load: Extract JSON messages from selected order
+  useEffect(() => {
+    if (!selectedOrder) return;
+    
+    let msgs = selectedOrder.messages;
+    if (typeof msgs === 'string') {
+      try { msgs = JSON.parse(msgs); } catch(e) { msgs = []; }
+    }
+    if (!Array.isArray(msgs)) msgs = [];
+    
+    setLiveMessages(msgs);
+  }, [selectedOrder]);
+
+  // 2. Real-time Listener: Receive messages instantly when customer sends them
   useEffect(() => {
     if (!selectedOrder?.id || !showChatBox) return;
 
-    const fetchOrderMessages = async () => {
-      const { data, error } = await supabase
-        .from('messages') // 👈 Customer side wali same table
-        .select('*')
-        .eq('order_id', selectedOrder.id)
-        .order('created_at', { ascending: true });
+    const tableName = (selectedOrder.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
 
-      if (data) setLiveMessages(data);
+    const chatSubscription = supabase
+      .channel(`shop-realtime-chat-${selectedOrder.id}`)
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: tableName,
+        filter: `id=eq.${selectedOrder.id}`
+      }, (payload) => {
+        if (payload.new && payload.new.messages) {
+          let newMsgs = payload.new.messages;
+          if (typeof newMsgs === 'string') {
+            try { newMsgs = JSON.parse(newMsgs); } catch(e) { newMsgs = []; }
+          }
+          if (!Array.isArray(newMsgs)) newMsgs = [];
+          setLiveMessages(newMsgs);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(chatSubscription);
     };
-
-    fetchOrderMessages();
   }, [selectedOrder?.id, showChatBox]);
 
   useEffect(() => {
@@ -132,6 +160,7 @@ export default function OrderDetailsView({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [liveMessages, showChatBox]);
 
+  // 3. Send Message Logic (Update JSON column in orders table)
   const handleSendReply = async () => {
     if (!chatMessage.trim() || !selectedOrder || isProcessing) return;
     setIsProcessing(true);
@@ -139,22 +168,34 @@ export default function OrderDetailsView({
     const userMsg = chatMessage;
     setChatMessage('');
 
-    const newDbMsg = {
-      order_id: selectedOrder.id,
-      shop_id: currentShop?.id || selectedOrder.shop_id,
-      customer_phone: selectedOrder.user_phone || selectedOrder.phone || selectedOrder.mobile || '',
-      sender_role: 'shop', // 🔥 Identifies shop owner
-      message_text: userMsg,
-      status: 'unread'
+    const tableName = (selectedOrder.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
+
+    let currentMsgs = liveMessages;
+    if (!Array.isArray(currentMsgs)) currentMsgs = [];
+
+    const newMsg = {
+      sender: 'shop', 
+      text: userMsg,
+      timestamp: new Date().toISOString()
     };
 
-    // 1. Optimistic Update (Turant screen par dikhane ke liye)
-    setLiveMessages(prev => [...prev, newDbMsg]);
+    const updatedMessages = [...currentMsgs, newMsg];
+
+    // Optimistic Update (Immediate display)
+    setLiveMessages(updatedMessages);
 
     try {
-      // 2. Database me insert
-      const { error } = await supabase.from('messages').insert([newDbMsg]);
+      // Database Update
+      const { error } = await supabase
+        .from(tableName)
+        .update({ messages: updatedMessages })
+        .eq('id', selectedOrder.id);
+
       if (error) throw error;
+      
+      // Update local selectedOrder state
+      setSelectedOrder((prev: any) => ({ ...prev, messages: updatedMessages }));
+      
     } catch (err: any) {
       console.error("Chat send error:", err.message);
       alert("❌ Message nahi ja saka. Internet check karein.");
@@ -164,7 +205,7 @@ export default function OrderDetailsView({
   };
 
   // ==========================================
-  // 🔥 NEW CALENDAR ACTION FUNCTIONS 🔥
+  // 🔥 CALENDAR ACTION FUNCTIONS 🔥
   // ==========================================
   const handleActionClick = (action: string) => {
     if (action === 'accepted' && selectedOrder?.payment_method === 'UPI' && selectedOrder?.payment_status === 'pending') {
@@ -1151,7 +1192,8 @@ export default function OrderDetailsView({
                 <p style={{color: '#64748b', textAlign: 'center'}}>Customer se abhi tak koi baat nahi hui hai.</p>
               ) : (
                 liveMessages.map((msg: any, idx: number) => {
-                  const isMe = msg.sender_role === 'shop' || msg.sender_role === 'admin';
+                  // 🔥 JSON format match: check for msg.sender
+                  const isMe = msg.sender === 'shop' || msg.sender === 'admin';
                   return (
                     <div key={idx} style={{ 
                       alignSelf: isMe ? 'flex-end' : 'flex-start', 
@@ -1166,7 +1208,8 @@ export default function OrderDetailsView({
                       <div style={{ fontSize: '11px', color: '#e2e8f0', marginBottom: '4px', fontWeight: 'bold' }}>
                         {isMe ? 'You (Shop)' : 'Customer'}
                       </div>
-                      <div>{msg.message_text || msg.text}</div>
+                      {/* 🔥 JSON format match: msg.text */}
+                      <div>{msg.text}</div>
                     </div>
                   );
                 })
