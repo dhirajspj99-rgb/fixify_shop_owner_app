@@ -1,8 +1,8 @@
 "use client";
 import React, { useState, useEffect, useRef } from 'react';
-import { supabase } from '@/supabase'; // 👈 अपने सही पाथ के अनुसार इसे सेट करें
+import { supabase } from '@/lib/supabaseClient'; // 👈 अपने सही पाथ के अनुसार इसे सेट करें
 
-export default function AdminSupportTab({ currentShop }: any) {
+export default function AdminSupportTab({ currentShop, openTrigger }: any) {
   // 1. UI States (Open/Close & Draggable)
   const [isOpen, setIsOpen] = useState(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
@@ -16,6 +16,15 @@ export default function AdminSupportTab({ currentShop }: any) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const botGreeting = "नमस्ते! मैं Fixifiy Admin हूँ। आपको कोई भी मदद चाहिए, तो मुझे यहाँ मैसेज करें।";
+
+  // ==========================================
+  // 🔥 AUTO OPEN VIA NOTIFICATION CLICK 🔥
+  // ==========================================
+  useEffect(() => {
+    if (openTrigger && openTrigger > 0) {
+      setIsOpen(true);
+    }
+  }, [openTrigger]);
 
   // ==========================================
   // 🔥 1. DRAG & DROP LOGIC (तैरने वाला लोगो) 🔥
@@ -143,8 +152,6 @@ export default function AdminSupportTab({ currentShop }: any) {
         }}
       >
         <span style={{ fontSize: '30px' }}>🎧</span>
-        {/* Unread dot (Optional notification dot) */}
-        <div style={{ position: 'absolute', top: 2, right: 2, width: 12, height: 12, backgroundColor: '#ef4444', borderRadius: '50%', border: '2px solid #0f172a' }} />
       </div>
 
       {/* 🟢 CHAT WINDOW (क्लिक करने पर खुलेगा) 🟢 */}

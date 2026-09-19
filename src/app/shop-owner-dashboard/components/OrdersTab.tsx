@@ -11,11 +11,9 @@ const STATE_DISTRICT_DATA: { [key: string]: string[] } = {
 };
 const COMMON_BLOCKS = ["Sadar", "Town", "City", "Rural", "North Zone", "South Zone", "East Zone", "West Zone", "Sector-1", "Sector-2"];
 
-export default function OrdersTab({ orders, setOrders, products, currentShop, fetchOrders, fetchProducts }: any) {
+export default function OrdersTab({ targetOrderId, setTargetOrderId, orders, setOrders, products, currentShop, fetchOrders, fetchProducts }: any) {
   const [orderSubTab, setOrderSubTab] = useState('global'); 
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
-  
-  // 🔥 NAYA: Master Search State
   const [masterSearch, setMasterSearch] = useState(''); 
   
   const [orderStateFilter, setOrderStateFilter] = useState('');
@@ -24,6 +22,28 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
   const [deliveryBoys, setDeliveryBoys] = useState<any[]>([]);
 
   const safeShopId = currentShop?.id ? String(currentShop.id) : null;
+
+  // 🔥 NAYA: Auto-Select Order via Notification
+  useEffect(() => {
+    if (targetOrderId && orders && orders.length > 0) {
+      const orderToOpen = orders.find((o: any) => o.id === targetOrderId);
+      if (orderToOpen) {
+        // Find which tab it belongs to
+        const s = String(orderToOpen.status || '').toLowerCase().trim();
+        const isCompleted = ['completed', 'complete', 'delivered', 'cancelled', 'refunded'].includes(s);
+        const isMine = String(orderToOpen.shop_id) === String(currentShop?.id);
+        const isGlobal = !orderToOpen.shop_id || String(orderToOpen.shop_id) === 'null';
+
+        if (isCompleted && isMine) setOrderSubTab('history');
+        else if (isGlobal) setOrderSubTab('global');
+        else if (isMine) setOrderSubTab('local');
+
+        setSelectedOrder(orderToOpen);
+        // Clear target
+        if(setTargetOrderId) setTargetOrderId(null);
+      }
+    }
+  }, [targetOrderId, orders]);
 
   useEffect(() => {
     const fetchDeliveryBoys = async () => {
@@ -94,7 +114,7 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
   const isGlobalUnassigned = (shopId: any) => !shopId || String(shopId) === 'null' || String(shopId).trim() === '' || String(shopId) === 'undefined' || String(shopId) === '0';
   const isMine = (shopId: any) => safeShopId && String(shopId) === safeShopId;
 
-  // 🔥 NAYA: Master Search Matcher Function
+  // Master Search Matcher Function
   const matchesMasterSearch = (o: any, term: string) => {
     if (!term) return true;
     const lowerTerm = term.toLowerCase();
@@ -106,12 +126,11 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
     );
   };
 
-  // 🔥 NAYA: Auto-Tab Switch Logic
+  // Auto-Tab Switch Logic
   const handleMasterSearch = (text: string) => {
     setMasterSearch(text);
     if (text.trim().length >= 3) {
       const term = text.toLowerCase();
-      // Find order anywhere in the list
       const foundOrder = (orders || []).find((o:any) => matchesMasterSearch(o, term));
       
       if (foundOrder) {
@@ -149,7 +168,7 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
     return true;
   }).filter(applyLocationFilter).filter((o:any) => matchesMasterSearch(o, masterSearch));
 
-  // 🔥 PAGE RENDER LOGIC 🔥
+  // PAGE RENDER LOGIC
   if (selectedOrder) {
     return (
       <OrderDetailsView 
@@ -170,7 +189,7 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
   return (
     <div style={{ animation: 'fadeIn 0.3s ease-in' }}>
       
-      {/* 🔥 NAYA: Master Search Box 🔥 */}
+      {/* Master Search Box */}
       <div style={{ marginBottom: '20px' }}>
         <input 
           type="text" 
@@ -196,6 +215,7 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
         )}
       </div>
 
+      {/* Tab Buttons */}
       <div style={{ display: 'flex', gap: '15px', marginBottom: '15px', borderBottom: '2px solid #334155', paddingBottom: '10px', flexWrap: 'wrap' }}>
         <button onClick={() => setOrderSubTab('global')} style={{ background: 'transparent', border: 'none', color: orderSubTab === 'global' ? '#f59e0b' : '#94a3b8', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}>
           🌐 Global Market ({globalOrders.length})
@@ -208,6 +228,7 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
         </button>
       </div>
 
+      {/* Filter Area */}
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '20px', backgroundColor: '#0f172a', padding: '15px', borderRadius: '8px', border: '1px solid #334155' }}>
           <strong style={{ color: '#38bdf8', alignSelf: 'center', marginRight: '10px' }}>🌍 Filter Area:</strong>
           <select value={orderStateFilter} onChange={e => {setOrderStateFilter(e.target.value); setOrderDistrictFilter(''); setOrderBlockFilter('');}} style={filterSelectStyle}>
@@ -224,6 +245,7 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
           </select>
       </div>
 
+      {/* Orders List Content */}
       {orderSubTab === 'local' && (
         <div>
           {myLocalOrders.length === 0 ? <p style={{ color: '#94a3b8', padding: '20px', textAlign: 'center' }}>Koi active order nahi hai aapki shop ke liye.</p> : myLocalOrders.map((order:any) => (
@@ -278,4 +300,3 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
 const filterSelectStyle: React.CSSProperties = { padding: '10px', borderRadius: '6px', border: '1px solid #334155', backgroundColor: '#1e293b', color: 'white', fontSize: '14px', flex: 1, minWidth: '150px' };
 const cardStyle: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: '1px solid #334155', cursor: 'pointer', backgroundColor: '#0f172a', margin: '10px 0', borderRadius: '12px', transition: '0.2s', boxShadow: '0 4px 6px rgba(0,0,0,0.2)' };
 const smallBtn: React.CSSProperties = { padding: '10px 15px', border: 'none', borderRadius: '6px', backgroundColor: '#3b82f6', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' };
-const inputStyle: React.CSSProperties = { display: 'block', width: '100%', padding: '12px', margin: '8px 0', borderRadius: '6px', border: '1px solid #334155', backgroundColor: '#1e293b', color: 'white', fontSize: '15px', boxSizing: 'border-box' };
