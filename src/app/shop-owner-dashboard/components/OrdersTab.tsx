@@ -15,7 +15,9 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
   const [orderSubTab, setOrderSubTab] = useState('global'); 
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   
-  const [historySearch, setHistorySearch] = useState(''); 
+  // 🔥 NAYA: Master Search State
+  const [masterSearch, setMasterSearch] = useState(''); 
+  
   const [orderStateFilter, setOrderStateFilter] = useState('');
   const [orderDistrictFilter, setOrderDistrictFilter] = useState('');
   const [orderBlockFilter, setOrderBlockFilter] = useState('');
@@ -64,7 +66,6 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
     return true;
   };
 
-  // 🔥 YEH LOGIC GAYAB HO GAYA THA, JISE MAINE WAPAS DAAL DIYA HAI 🔥
   const availableStates = Array.from(new Set([...Object.keys(STATE_DISTRICT_DATA), ...(orders||[]).map((o:any) => o.state).filter(Boolean)])).sort() as string[];
   
   let availableDistricts: string[] = [];
@@ -80,7 +81,6 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
     availableBlocks = Array.from(new Set([...COMMON_BLOCKS, ...orderBlocks])).sort() as string[];
   }
 
-  // 🔥 ROCK SOLID ORDER CATEGORIZATION 🔥
   const isOrderHistory = (status: string) => {
     const s = String(status || '').toLowerCase().trim();
     return ['completed', 'complete', 'delivered', 'cancelled', 'refunded'].includes(s);
@@ -94,13 +94,45 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
   const isGlobalUnassigned = (shopId: any) => !shopId || String(shopId) === 'null' || String(shopId).trim() === '' || String(shopId) === 'undefined' || String(shopId) === '0';
   const isMine = (shopId: any) => safeShopId && String(shopId) === safeShopId;
 
+  // 🔥 NAYA: Master Search Matcher Function
+  const matchesMasterSearch = (o: any, term: string) => {
+    if (!term) return true;
+    const lowerTerm = term.toLowerCase();
+    return (
+      String(o.id).toLowerCase().includes(lowerTerm) ||
+      String(o.order_no).toLowerCase().includes(lowerTerm) ||
+      String(o.customer_name || o.name).toLowerCase().includes(lowerTerm) ||
+      String(o.phone || o.user_phone).toLowerCase().includes(lowerTerm)
+    );
+  };
+
+  // 🔥 NAYA: Auto-Tab Switch Logic
+  const handleMasterSearch = (text: string) => {
+    setMasterSearch(text);
+    if (text.trim().length >= 3) {
+      const term = text.toLowerCase();
+      // Find order anywhere in the list
+      const foundOrder = (orders || []).find((o:any) => matchesMasterSearch(o, term));
+      
+      if (foundOrder) {
+        if (isOrderHistory(foundOrder.status) && isMine(foundOrder.shop_id)) {
+          setOrderSubTab('history');
+        } else if (isNewStatus(foundOrder.status) || isGlobalUnassigned(foundOrder.shop_id)) {
+          setOrderSubTab('global');
+        } else if (isMine(foundOrder.shop_id)) {
+          setOrderSubTab('local');
+        }
+      }
+    }
+  };
+
   // 1. GLOBAL MARKET
   const globalOrders = (orders || []).filter((o: any) => {
     if (isOrderHistory(o.status)) return false; 
     if (isNewStatus(o.status)) return true;
     if (isGlobalUnassigned(o.shop_id)) return true;
     return false;
-  }).filter(applyLocationFilter);
+  }).filter(applyLocationFilter).filter((o:any) => matchesMasterSearch(o, masterSearch));
 
   // 2. LOCAL WORKING
   const myLocalOrders = (orders || []).filter((o: any) => {
@@ -108,19 +140,14 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
     if (isOrderHistory(o.status)) return false;
     if (isNewStatus(o.status)) return false; 
     return true; 
-  }).filter(applyLocationFilter);
+  }).filter(applyLocationFilter).filter((o:any) => matchesMasterSearch(o, masterSearch));
 
   // 3. HISTORY
   const historyOrders = (orders || []).filter((o: any) => {
     if (!isMine(o.shop_id)) return false;
     if (!isOrderHistory(o.status)) return false;
-    
-    if (historySearch) {
-      const term = historySearch.toLowerCase();
-      return String(o.customer_name || '').toLowerCase().includes(term) || String(o.user_phone || '').toLowerCase().includes(term);
-    }
     return true;
-  }).filter(applyLocationFilter);
+  }).filter(applyLocationFilter).filter((o:any) => matchesMasterSearch(o, masterSearch));
 
   // 🔥 PAGE RENDER LOGIC 🔥
   if (selectedOrder) {
@@ -142,7 +169,34 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
 
   return (
     <div style={{ animation: 'fadeIn 0.3s ease-in' }}>
-      <div style={{ display: 'flex', gap: '15px', marginBottom: '15px', borderBottom: '2px solid #334155', paddingBottom: '10px' }}>
+      
+      {/* 🔥 NAYA: Master Search Box 🔥 */}
+      <div style={{ marginBottom: '20px' }}>
+        <input 
+          type="text" 
+          placeholder="🔍 Search by Order ID (#FIX...), Name, or Phone..." 
+          value={masterSearch}
+          onChange={(e) => handleMasterSearch(e.target.value)}
+          style={{
+            width: '100%',
+            padding: '15px 20px',
+            borderRadius: '10px',
+            border: '2px solid #38bdf8',
+            backgroundColor: '#0f172a',
+            color: 'white',
+            fontSize: '15px',
+            outline: 'none',
+            boxShadow: '0 4px 10px rgba(0,0,0,0.2)'
+          }}
+        />
+        {masterSearch && (
+          <div style={{ fontSize: '12px', color: '#4ade80', marginTop: '5px', marginLeft: '5px' }}>
+            Auto-searching across all tabs...
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: '15px', marginBottom: '15px', borderBottom: '2px solid #334155', paddingBottom: '10px', flexWrap: 'wrap' }}>
         <button onClick={() => setOrderSubTab('global')} style={{ background: 'transparent', border: 'none', color: orderSubTab === 'global' ? '#f59e0b' : '#94a3b8', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}>
           🌐 Global Market ({globalOrders.length})
         </button>
@@ -177,7 +231,7 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
               <div>
                 <strong style={{fontSize: '18px', color: '#f8fafc'}}>Order #{order.order_no || order.id}</strong> <br/>
                 <span style={{color: '#94a3b8'}}>👤 {order.customer_name || order.name || 'Customer'}</span> <br/>
-                <span style={{fontSize: '12px', color: '#cbd5e1'}}>📍 {order.location || 'Area N/A'}</span> <br/>
+                <span style={{fontSize: '12px', color: '#cbd5e1'}}>📍 {order.block || order.location || 'Area N/A'}</span> <br/>
                 <span style={{ color: getOrderColor(order.status), fontWeight: 'bold', fontSize: '14px' }}>• {(order.status || 'PENDING').toUpperCase()}</span>
               </div>
               <button style={smallBtn}>⚙️ View / Manage</button>
@@ -188,7 +242,6 @@ export default function OrdersTab({ orders, setOrders, products, currentShop, fe
 
       {orderSubTab === 'history' && (
         <div>
-          <input type="text" placeholder="🔍 Customer search..." value={historySearch} onChange={(e) => setHistorySearch(e.target.value)} style={{...inputStyle, marginBottom: '20px'}} />
           {historyOrders.length === 0 ? <p style={{ color: '#94a3b8', padding: '20px', textAlign: 'center' }}>Koi history record nahi mila.</p> : historyOrders.map((order:any) => (
             <div key={order.id} onClick={() => setSelectedOrder(order)} style={{ ...cardStyle, borderLeft: `6px solid ${getOrderColor(order.status)}` }}>
               <div>

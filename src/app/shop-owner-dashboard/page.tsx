@@ -5,11 +5,12 @@ import { useRouter } from 'next/navigation';
 import OrdersTab from './components/OrdersTab';
 import InventoryTab from './components/InventoryTab';
 import SalesAndStockTab from './components/SalesAndStockTab';
-import CustomerSupportTab from './components/CustomerSupportTab'; 
 import ShopWalletPassbook from './components/ShopWalletPassbook';
 
-// 🔥 Naya Profile Component Import Karein 🔥
+// 🔥 Profile Component 
 import ShopProfile from './components/ShopProfile';
+// 🔥 Floating Admin Support Widget
+import AdminSupportTab from './components/AdminSupportTab';
 
 // ==========================================
 // MAIN DASHBOARD COMPONENT
@@ -17,7 +18,9 @@ import ShopProfile from './components/ShopProfile';
 
 export default function ShopOwnerDashboard() {
   const router = useRouter();  
-  const [activeTab, setActiveTab] = useState('orders');
+  
+  // 🔥 1. Default Tab ab 'sales' kar diya gaya hai
+  const [activeTab, setActiveTab] = useState('sales');
   
   const [currentShop, setCurrentShop] = useState<any>(null); 
   const [products, setProducts] = useState<any[]>([]); 
@@ -28,13 +31,8 @@ export default function ShopOwnerDashboard() {
   
   const [unreadNotifications, setUnreadNotifications] = useState(0);
 
-  // Notice Board & Help Desk Chat
+  // Notice Board
   const [notices, setNotices] = useState<any[]>([]);
-  
-  // 🔥 CHAT LOGIC: Default 'false' (Band rahega). Naya message aane par true hoga!
-  const [isChatOpen, setIsChatOpen] = useState(false);
-  const [chatMessage, setChatMessage] = useState('');
-  const [chatHistory, setChatHistory] = useState<any[]>([]);
 
   // UPI Settings States
   const [idCardUpi, setIdCardUpi] = useState('admin@upi');
@@ -44,7 +42,7 @@ export default function ShopOwnerDashboard() {
   useEffect(() => { 
     fetchAuthAndData(); 
     
-    // Realtime Orders Setup
+    // Realtime Orders Setup (Sirf Customer Orders ke liye)
     const ordersSubscription = supabase.channel('realtime-orders').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => { 
         if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
             const updatedOrder = payload.new;
@@ -67,26 +65,13 @@ export default function ShopOwnerDashboard() {
                 const lastMsg = parsedMsgs[parsedMsgs.length - 1];
                 if (lastMsg.sender === 'customer') {
                    setUnreadNotifications(prev => prev + 1);
-                   // 🔥 JAISE HI CUSTOMER KA MESSAGE AAYEGA, CHAT OPEN HO JAYEGI!
-                   setIsChatOpen(true); 
                 }
             }
         }
     }).subscribe();
-    
-    const chatSubscription = supabase.channel('realtime-chats').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'helpdesk_chats' }, (payload) => { 
-      const newChat = payload.new;
-      setChatHistory(prev => [...prev, newChat]); 
-      
-      // 🔥 JAISE HI ADMIN KA MESSAGE AAYEGA, HELP DESK POPUP OPEN HOGA!
-      if(newChat.sender !== 'shop' && String(newChat.shop_id) === String(currentShop?.id)) {
-         setIsChatOpen(true);
-      }
-    }).subscribe();
 
     return () => { 
       supabase.removeChannel(ordersSubscription); 
-      supabase.removeChannel(chatSubscription);
     };
   }, [currentShop?.id]); 
 
@@ -131,7 +116,6 @@ export default function ShopOwnerDashboard() {
     fetchProducts(); 
     if(shopData?.id) {
        fetchOrders(shopData.id); 
-       fetchChatHistory(shopData.id); 
     }
     fetchNotices(); 
   };
@@ -139,19 +123,6 @@ export default function ShopOwnerDashboard() {
   const fetchNotices = async () => {
     const { data } = await supabase.from('notices').select('*').eq('is_active', true).order('created_at', { ascending: false });
     if (data) setNotices(data);
-  };
-
-  const fetchChatHistory = async (shopId: string | number) => {
-    const { data } = await supabase.from('helpdesk_chats').select('*').eq('shop_id', String(shopId)).order('created_at', { ascending: true });
-    if (data) setChatHistory(data);
-  };
-
-  const sendChatMessage = async () => {
-    if (!chatMessage.trim() || !currentShop?.id) return;
-    const newMessage = { shop_id: String(currentShop.id), message: chatMessage, sender: 'shop' };
-    setChatMessage(''); 
-    const { error } = await supabase.from('helpdesk_chats').insert([newMessage]);
-    if (error) alert("Error: " + error.message);
   };
 
   const fetchProducts = async () => { const { data } = await supabase.from('products').select('*'); if (data) setProducts(data); };
@@ -185,7 +156,7 @@ export default function ShopOwnerDashboard() {
   const handleLogout = async () => { 
       if (window.confirm("Logout karein?")) { 
           localStorage.removeItem('fixifiy_shop'); 
-          localStorage.removeItem('shop_login_time'); // 🔥 Securing auto-logout state
+          localStorage.removeItem('shop_login_time'); 
           await supabase.auth.signOut(); 
           router.push('/'); 
       } 
@@ -228,11 +199,17 @@ export default function ShopOwnerDashboard() {
 
       {/* HEADER SECTION (Responsive Flex Wrap) */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '15px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        
+        {/* 🔥 2. LOGO SECTION CLICKABLE AS HOME BUTTON (Back to Sales) 🔥 */}
+        <div 
+           onClick={() => setActiveTab('sales')} 
+           style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}
+           title="Go to Home / Sales Dashboard"
+        >
           {currentShop?.profile_pic ? <img src={currentShop.profile_pic} style={{ width: '50px', height: '50px', borderRadius: '50%', objectFit: 'cover', border: currentShop?.is_prime ? '3px solid #facc15' : 'none' }} /> : <div style={{ fontSize: '35px' }}>🏪</div>}
           <div>
             <h1 style={{ color: '#38bdf8', margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              Shop Dashboard
+              Fixifiy Shop Dashboard
               {currentShop?.is_prime && <span style={{fontSize: '11px', background: '#facc15', color: 'black', padding: '2px 6px', borderRadius: '12px'}}>PRIME</span>}
             </h1>
             <p style={{ color: '#94a3b8', margin: '3px 0 0 0', fontSize: '13px' }}><strong>{currentShop?.name || 'New Shop'}</strong></p>
@@ -240,7 +217,7 @@ export default function ShopOwnerDashboard() {
         </div>
         
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-          {unreadNotifications > 0 && <div style={{ backgroundColor: '#f43f5e', padding: '6px 12px', borderRadius: '20px', fontWeight: 'bold', fontSize: '12px' }}>🔔 {unreadNotifications}</div>}
+          {unreadNotifications > 0 && <div style={{ backgroundColor: '#f43f5e', padding: '6px 12px', borderRadius: '20px', fontWeight: 'bold', fontSize: '12px' }}>🔔 {unreadNotifications} (Orders)</div>}
           
           {!currentShop?.is_prime && (
             <button onClick={() => setIsPrimeModalOpen(true)} style={{...editBtn, backgroundColor: '#f59e0b', color: '#000'}}>👑 Prime</button>
@@ -253,28 +230,22 @@ export default function ShopOwnerDashboard() {
 
       {/* TABS BUTTONS (Scrollable on Mobile) */}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', overflowX: 'auto', whiteSpace: 'nowrap', paddingBottom: '5px', WebkitOverflowScrolling: 'touch' }}>
+        <button onClick={() => setActiveTab('sales')} style={tabBtn(activeTab === 'sales')}>📈 Sales & Ledger</button>
         <button onClick={() => setActiveTab('orders')} style={tabBtn(activeTab === 'orders')}>🛒 Orders</button>
         <button onClick={() => setActiveTab('inventory')} style={tabBtn(activeTab === 'inventory')}>📦 Inventory</button>
         <button onClick={() => setActiveTab('wallet')} style={tabBtn(activeTab === 'wallet')}>💳 Wallet</button>
-        <button onClick={() => setActiveTab('sales')} style={tabBtn(activeTab === 'sales')}>📈 Sales</button>
-        <button onClick={() => setActiveTab('stock')} style={tabBtn(activeTab === 'stock')}>📊 Stock</button>
-        <button onClick={() => setActiveTab('support')} style={tabBtn(activeTab === 'support')}>🎧 Customer Chats</button>
+        <button onClick={() => setActiveTab('stock')} style={tabBtn(activeTab === 'stock')}>📊 Stock Report</button>
       </div>
 
       {/* TABS CONTENT WRAPPER */}
       <div style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', width: '100%', boxSizing: 'border-box' }}>
+        {(activeTab === 'sales' || activeTab === 'stock') && <SalesAndStockTab activeTab={activeTab} orders={orders} currentShop={currentShop} products={products} fetchProducts={fetchProducts} fetchOrders={fetchOrders} />}
         {activeTab === 'orders' && <OrdersTab orders={orders} setOrders={setOrders} products={products} currentShop={currentShop} fetchOrders={fetchOrders} fetchProducts={fetchProducts} setUnreadNotifications={setUnreadNotifications} />}
         {activeTab === 'inventory' && <InventoryTab products={products} fetchProducts={fetchProducts} currentShop={currentShop} />}
-        
-        {activeTab === 'wallet' && (
-          <ShopWalletPassbook supabase={supabase} shopUser={currentShop} setAppStep={() => setActiveTab('orders')} />
-        )}
-        
-        {(activeTab === 'sales' || activeTab === 'stock') && <SalesAndStockTab activeTab={activeTab} orders={orders} currentShop={currentShop} products={products} fetchProducts={fetchProducts} fetchOrders={fetchOrders} />}
-        {activeTab === 'support' && <CustomerSupportTab currentShop={currentShop} orders={orders} fetchOrders={fetchOrders} />}
+        {activeTab === 'wallet' && <ShopWalletPassbook supabase={supabase} shopUser={currentShop} setAppStep={() => setActiveTab('sales')} />}
       </div>
 
-      {/* SHOP PROFILE */}
+      {/* SHOP PROFILE MODAL */}
       {isProfileModalOpen && (
         <ShopProfile 
           currentShop={currentShop} 
@@ -313,39 +284,8 @@ export default function ShopOwnerDashboard() {
         </div>
       )}
 
-      {/* 🔥 FLOATING HELP DESK (Mobile Adjusted width) 🔥 */}
-      <div style={{ position: 'fixed', bottom: '15px', right: '15px', zIndex: 9999 }}>
-        {isChatOpen ? (
-          <div style={{ width: '90vw', maxWidth: '320px', height: '400px', backgroundColor: '#1e293b', border: '2px solid #38bdf8', borderRadius: '12px', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }}>
-            <div style={{ backgroundColor: '#0284c7', padding: '12px 15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'white' }}>
-              <strong style={{ fontSize: '14px' }}>🎧 Help Desk & Orders</strong>
-              <button onClick={() => setIsChatOpen(false)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '18px' }}>✖</button>
-            </div>
-
-            <div style={{ flex: 1, padding: '15px', overflowY: 'auto', backgroundColor: '#0f172a', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {chatHistory.length === 0 ? (
-                <p style={{ textAlign: 'center', color: '#94a3b8', fontSize: '12px', marginTop: '50px' }}>Chat empty. We will reply shortly!</p>
-              ) : (
-                chatHistory.map((chat, idx) => (
-                  <div key={idx} style={{ alignSelf: chat.sender === 'shop' ? 'flex-end' : 'flex-start', maxWidth: '85%', backgroundColor: chat.sender === 'shop' ? '#10b981' : '#334155', padding: '8px 12px', borderRadius: chat.sender === 'shop' ? '12px 12px 0 12px' : '12px 12px 12px 0', color: 'white', fontSize: '13px' }}>
-                    {chat.message}
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div style={{ padding: '10px', backgroundColor: '#1e293b', borderTop: '1px solid #334155', display: 'flex', gap: '8px' }}>
-              <input type="text" placeholder="Type message..." value={chatMessage} onChange={(e) => setChatMessage(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && sendChatMessage()} style={{ flex: 1, padding: '10px', borderRadius: '20px', border: '1px solid #334155', backgroundColor: '#0f172a', color: 'white', outline: 'none', fontSize: '13px' }} />
-              <button onClick={sendChatMessage} style={{ backgroundColor: '#38bdf8', border: 'none', borderRadius: '50%', width: '38px', height: '38px', color: '#0f172a', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>➤</button>
-            </div>
-          </div>
-        ) : (
-          <button onClick={() => setIsChatOpen(true)} style={{ backgroundColor: '#38bdf8', color: '#0f172a', border: 'none', borderRadius: '50px', padding: '12px 20px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', boxShadow: '0 4px 10px rgba(0,0,0,0.3)' }}>
-            💬 Chat
-            {unreadNotifications > 0 && <span style={{ background: '#ef4444', color: 'white', borderRadius: '50%', padding: '2px 6px', fontSize: '11px' }}>{unreadNotifications}</span>}
-          </button>
-        )}
-      </div>
+      {/* 🔥 FLOATING ADMIN SUPPORT WIDGET 🔥 */}
+      <AdminSupportTab currentShop={currentShop} />
 
     </div>
   );
