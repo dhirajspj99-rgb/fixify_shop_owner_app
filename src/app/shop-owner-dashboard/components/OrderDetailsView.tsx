@@ -16,24 +16,16 @@ export default function OrderDetailsView({
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // 🔥 COLLAPSIBLE SECTIONS STATES
   const [showChatBox, setShowChatBox] = useState(false);
   const [showReturnPolicySettings, setShowReturnPolicySettings] = useState(false);
 
-  // ==========================================
-  // 🔥 NEW STATES: LIVE CHAT & AUTO SCROLL 🔥
-  // ==========================================
   const [liveMessages, setLiveMessages] = useState<any[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // ==========================================
-  // 🔥 NEW STATES: CALENDAR & TIME PICKER 🔥
-  // ==========================================
   const [showDateTimePicker, setShowDateTimePicker] = useState(false);
-  const [dateTimeAction, setDateTimeAction] = useState(''); // 'accepted', 'rescheduled', 'out_for_delivery'
+  const [dateTimeAction, setDateTimeAction] = useState(''); 
   const [selectedDateTime, setSelectedDateTime] = useState('');
 
-  // पुरानी तारीख ब्लॉक करने के लिए आज का समय निकाल रहे हैं
   const now = new Date();
   now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
   const minDateTime = now.toISOString().slice(0, 16); 
@@ -109,23 +101,18 @@ export default function OrderDetailsView({
   };
 
   // ==========================================
-  // 🔥 REAL-TIME CHAT LOGIC (Matches Customer App) 🔥
+  // 🔥 REAL-TIME CHAT LOGIC (JSON Update) 🔥
   // ==========================================
-  
-  // 1. Initial Load: Extract JSON messages from selected order
   useEffect(() => {
     if (!selectedOrder) return;
-    
     let msgs = selectedOrder.messages;
     if (typeof msgs === 'string') {
       try { msgs = JSON.parse(msgs); } catch(e) { msgs = []; }
     }
     if (!Array.isArray(msgs)) msgs = [];
-    
     setLiveMessages(msgs);
   }, [selectedOrder]);
 
-  // 2. Real-time Listener: Receive messages instantly when customer sends them
   useEffect(() => {
     if (!selectedOrder?.id || !showChatBox) return;
 
@@ -156,11 +143,9 @@ export default function OrderDetailsView({
   }, [selectedOrder?.id, showChatBox]);
 
   useEffect(() => {
-    // Auto-scroll to latest message
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [liveMessages, showChatBox]);
 
-  // 3. Send Message Logic (Update JSON column in orders table)
   const handleSendReply = async () => {
     if (!chatMessage.trim() || !selectedOrder || isProcessing) return;
     setIsProcessing(true);
@@ -180,22 +165,16 @@ export default function OrderDetailsView({
     };
 
     const updatedMessages = [...currentMsgs, newMsg];
-
-    // Optimistic Update (Immediate display)
     setLiveMessages(updatedMessages);
 
     try {
-      // Database Update
       const { error } = await supabase
         .from(tableName)
         .update({ messages: updatedMessages })
         .eq('id', selectedOrder.id);
 
       if (error) throw error;
-      
-      // Update local selectedOrder state
       setSelectedOrder((prev: any) => ({ ...prev, messages: updatedMessages }));
-      
     } catch (err: any) {
       console.error("Chat send error:", err.message);
       alert("❌ Message nahi ja saka. Internet check karein.");
@@ -224,7 +203,6 @@ export default function OrderDetailsView({
     const tableName = (selectedOrder.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
     const newShopId = currentShop?.id || selectedOrder.shop_id;
 
-    // Date Format fix
     const dateObj = new Date(selectedDateTime);
     const formattedDate = dateObj.toLocaleString('en-IN', {
       day: 'numeric', month: 'short', year: 'numeric',
@@ -1173,72 +1151,87 @@ export default function OrderDetailsView({
       </div>
 
       {/* ==========================================
-          🔥 UPDATED: COLLAPSIBLE IN-APP CHAT (REALTIME FETCH) 🔥
+          🔥 IN-APP CHAT (LOCKED BEFORE ACCEPT) 🔥
           ========================================== */}
-      <div style={{ backgroundColor: '#0f172a', padding: '20px', borderRadius: '12px', border: '1px solid #334155', marginTop: '20px' }}>
-        <button 
-          onClick={() => setShowChatBox(!showChatBox)}
-          style={{ width: '100%', background: 'transparent', border: 'none', color: '#38bdf8', fontSize: '16px', fontWeight: 'bold', textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between' }}
-        >
-          <span>💬 In-App Customer Chat</span>
-          <span>{showChatBox ? '▲' : '▼'}</span>
-        </button>
+      {(() => {
+        const isLocked = ['pending', 'new', 'draft', 'new order'].includes(s);
 
-        {showChatBox && (
-          <div style={{ marginTop: '15px' }}>
-            <div style={{ height: '300px', overflowY: 'auto', backgroundColor: '#1e293b', padding: '15px', borderRadius: '8px', marginBottom: '15px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              
-              {liveMessages.length === 0 ? (
-                <p style={{color: '#64748b', textAlign: 'center'}}>Customer se abhi tak koi baat nahi hui hai.</p>
-              ) : (
-                liveMessages.map((msg: any, idx: number) => {
-                  // 🔥 JSON format match: check for msg.sender
-                  const isMe = msg.sender === 'shop' || msg.sender === 'admin';
-                  return (
-                    <div key={idx} style={{ 
-                      alignSelf: isMe ? 'flex-end' : 'flex-start', 
-                      backgroundColor: isMe ? '#10b981' : '#334155', 
-                      color: 'white', 
-                      padding: '10px 14px', 
-                      borderRadius: '12px', 
-                      maxWidth: '80%', 
-                      fontSize: '14px',
-                      boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-                    }}>
-                      <div style={{ fontSize: '11px', color: '#e2e8f0', marginBottom: '4px', fontWeight: 'bold' }}>
-                        {isMe ? 'You (Shop)' : 'Customer'}
-                      </div>
-                      {/* 🔥 JSON format match: msg.text */}
-                      <div>{msg.text}</div>
-                    </div>
-                  );
-                })
-              )}
-              {/* Dummy div to scroll to bottom */}
-              <div ref={messagesEndRef} />
+        if (isLocked) {
+          return (
+            <div style={{ backgroundColor: '#0f172a', padding: '25px', borderRadius: '12px', border: '1px dashed #475569', marginTop: '20px', textAlign: 'center' }}>
+              <div style={{ fontSize: '35px', marginBottom: '10px' }}>🔒</div>
+              <h4 style={{ color: '#94a3b8', margin: 0 }}>चैट अभी लॉक है</h4>
+              <p style={{ color: '#64748b', fontSize: '13px', marginTop: '8px' }}>
+                Customer से चैट शुरू करने के लिए पहले Order को <strong>"Accept"</strong> करें।
+              </p>
             </div>
+          );
+        }
 
-            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-              <input 
-                 type="text" 
-                 value={chatMessage} 
-                 onChange={(e) => setChatMessage(e.target.value)} 
-                 onKeyDown={(e) => e.key === 'Enter' && handleSendReply()} 
-                 placeholder="Type a reply to customer..." 
-                 disabled={isProcessing} 
-                 style={{ flex: 1, minWidth: '200px', padding: '12px', borderRadius: '6px', border: '1px solid #334155', backgroundColor: '#1e293b', color: 'white', outline: 'none' }} 
-              />
-              <button 
-                 onClick={handleSendReply} 
-                 disabled={isProcessing} 
-                 style={{ flex: '0 0 auto', backgroundColor: '#38bdf8', color: '#0f172a', border: 'none', padding: '10px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: isProcessing ? 'wait' : 'pointer' }}
-              >
-                 {isProcessing ? '⏳ Sending...' : 'Send Reply'}
-              </button>
-            </div>
+        return (
+          <div style={{ backgroundColor: '#0f172a', padding: '20px', borderRadius: '12px', border: '1px solid #334155', marginTop: '20px' }}>
+            <button 
+              onClick={() => setShowChatBox(!showChatBox)}
+              style={{ width: '100%', background: 'transparent', border: 'none', color: '#38bdf8', fontSize: '16px', fontWeight: 'bold', textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between' }}
+            >
+              <span>💬 In-App Customer Chat</span>
+              <span>{showChatBox ? '▲' : '▼'}</span>
+            </button>
+
+            {showChatBox && (
+              <div style={{ marginTop: '15px' }}>
+                <div style={{ height: '300px', overflowY: 'auto', backgroundColor: '#1e293b', padding: '15px', borderRadius: '8px', marginBottom: '15px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  
+                  {liveMessages.length === 0 ? (
+                    <p style={{color: '#64748b', textAlign: 'center'}}>Customer se abhi tak koi baat nahi hui hai.</p>
+                  ) : (
+                    liveMessages.map((msg: any, idx: number) => {
+                      const isMe = msg.sender === 'shop' || msg.sender === 'admin';
+                      return (
+                        <div key={idx} style={{ 
+                          alignSelf: isMe ? 'flex-end' : 'flex-start', 
+                          backgroundColor: isMe ? '#10b981' : '#334155', 
+                          color: 'white', 
+                          padding: '10px 14px', 
+                          borderRadius: '12px', 
+                          maxWidth: '80%', 
+                          fontSize: '14px',
+                          boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                        }}>
+                          <div style={{ fontSize: '11px', color: '#e2e8f0', marginBottom: '4px', fontWeight: 'bold' }}>
+                            {isMe ? 'You (Shop)' : 'Customer'}
+                          </div>
+                          <div>{msg.text}</div>
+                        </div>
+                      );
+                    })
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                  <input 
+                     type="text" 
+                     value={chatMessage} 
+                     onChange={(e) => setChatMessage(e.target.value)} 
+                     onKeyDown={(e) => e.key === 'Enter' && handleSendReply()} 
+                     placeholder="Type a reply to customer..." 
+                     disabled={isProcessing} 
+                     style={{ flex: 1, minWidth: '200px', padding: '12px', borderRadius: '6px', border: '1px solid #334155', backgroundColor: '#1e293b', color: 'white', outline: 'none' }} 
+                  />
+                  <button 
+                     onClick={handleSendReply} 
+                     disabled={isProcessing} 
+                     style={{ flex: '0 0 auto', backgroundColor: '#38bdf8', color: '#0f172a', border: 'none', padding: '10px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: isProcessing ? 'wait' : 'pointer' }}
+                  >
+                     {isProcessing ? '⏳ Sending...' : 'Send Reply'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        );
+      })()}
 
       {/* 🔥 ENHANCED IMAGE LIGHTBOX PREVIEW 🔥 */}
       {previewImage && (
