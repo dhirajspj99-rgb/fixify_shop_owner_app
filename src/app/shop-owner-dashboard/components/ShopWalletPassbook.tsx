@@ -82,10 +82,10 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
       });
 
       (walletData || []).forEach((w: any) => {
-        // 🔥 Clean Token Format (FIX-WTH-XXXXXX)
+        // 🔥 Clean & Short Token Format (FIX-XXXX)
         let tokenNo = w.token_no;
         if (!tokenNo || tokenNo.startsWith('TXN-') || tokenNo.includes('-')) {
-          tokenNo = `FIX-WTH-${String(w.id).padStart(6, '0')}`;
+          tokenNo = `FIX-${String(w.id).slice(-4).padStart(4, '0')}`;
         }
 
         unifiedLedger.push({
@@ -139,8 +139,8 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
 
     setIsProcessing(true);
     try {
-      // 🔥 UNIQUE WITHDRAWAL TOKEN GENERATE KARNA (FIX-WTH-xxxxxx)
-      const uniqueTokenNo = `FIX-WTH-${Math.floor(100000 + Math.random() * 900000)}`;
+      // 🔥 4-DIGIT SHORT TOKEN GENERATE KARNA (jaise: FIX-4452)
+      const uniqueTokenNo = `FIX-${Math.floor(1000 + Math.random() * 9000)}`;
 
       const { error: txnError } = await supabase.from('wallet_transactions').insert({
         shop_id: shopUser.id,
@@ -154,7 +154,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
 
       if (txnError) throw txnError;
 
-      alert(`✅ ₹${amt} ka withdrawal request bhej diya gaya hai!\n🎫 Withdrawal Token ID: ${uniqueTokenNo}`);
+      alert(`✅ ₹${amt} ka withdrawal request bhej diya gaya hai!\n🎫 Token Number: ${uniqueTokenNo}\n(Is number ko note kar lein, zaroorat padne par admin ko de sakte hain.)`);
       setShowWithdraw(false); 
       setWithdrawAmount('');
       fetchShopWalletData(); 
@@ -221,7 +221,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
       <div style={{ marginBottom: '20px' }}>
         <input 
           type="text"
-          placeholder="🔍 Search by Order No (#FIX...), Withdrawal Token (FIX-WTH-...), or UTR..."
+          placeholder="🔍 Search by Order No (#FIX...), Token (FIX-4452), or UTR..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           style={{
