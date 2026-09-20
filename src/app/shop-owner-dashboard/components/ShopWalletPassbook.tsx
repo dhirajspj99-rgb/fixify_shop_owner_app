@@ -82,8 +82,12 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
       });
 
       (walletData || []).forEach((w: any) => {
-        // 🔥 Har withdrawal ke liye unique token ID ensure karna (fallback to w.id)
-        const tokenNo = w.token_no || `TXN-${w.id}`;
+        // 🔥 Clean Token Format (FIX-WTH-XXXXXX)
+        let tokenNo = w.token_no;
+        if (!tokenNo || tokenNo.startsWith('TXN-') || tokenNo.includes('-')) {
+          tokenNo = `FIX-WTH-${String(w.id).padStart(6, '0')}`;
+        }
+
         unifiedLedger.push({
           id: 'txn_' + w.id,
           real_id: w.id,
@@ -92,7 +96,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
           reason: w.reason || 'Withdrawal Request',
           created_at: w.created_at,
           status: w.status,
-          token_no: tokenNo, // 👈 Store token number
+          token_no: tokenNo, 
           raw_data: w,
           search_key: `${tokenNo} ${w.utr_no || ''} ${w.reason || ''}`.toLowerCase()
         });
@@ -135,7 +139,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
 
     setIsProcessing(true);
     try {
-      // 🔥 UNIQUE WITHDRAWAL TOKEN GENERATE KARNA (Jaise: FIX-WTH-98421)
+      // 🔥 UNIQUE WITHDRAWAL TOKEN GENERATE KARNA (FIX-WTH-xxxxxx)
       const uniqueTokenNo = `FIX-WTH-${Math.floor(100000 + Math.random() * 900000)}`;
 
       const { error: txnError } = await supabase.from('wallet_transactions').insert({
@@ -145,7 +149,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
         type: 'debit',
         status: 'pending', 
         reason: `Shop Withdrawal Request`,
-        token_no: uniqueTokenNo // 👈 Database mein token number save hoga
+        token_no: uniqueTokenNo 
       });
 
       if (txnError) throw txnError;
@@ -163,7 +167,6 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
 
   const pendingClearance = Math.max(0, totalBalance - withdrawableBalance);
 
-  // FILTER TRANSACTIONS BASED ON SEARCH QUERY
   const filteredTransactions = transactions.filter((txn: any) => {
     if (!searchQuery.trim()) return true;
     const query = searchQuery.toLowerCase().trim();
@@ -381,7 +384,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
 
             <button onClick={() => setSelectedTxnDetails(null)} style={{ width: '100%', marginTop: '20px', padding: '12px', background: '#0f172a', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
               Close Details
-            </Link>
+            </button>
           </div>
         </div>
       )}
