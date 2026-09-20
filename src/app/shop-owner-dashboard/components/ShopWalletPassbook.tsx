@@ -14,7 +14,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
   const [withdrawAmount, setWithdrawAmount] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // 🔥 NAYA: Search State (Order No ya Token No se search karne ke liye)
+  // Search State (Order No, Token No ya UTR se search karne ke liye)
   const [searchQuery, setSearchQuery] = useState('');
 
   // Detailed Modal State
@@ -82,6 +82,8 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
       });
 
       (walletData || []).forEach((w: any) => {
+        // 🔥 Har withdrawal ke liye unique token ID ensure karna (fallback to w.id)
+        const tokenNo = w.token_no || `TXN-${w.id}`;
         unifiedLedger.push({
           id: 'txn_' + w.id,
           real_id: w.id,
@@ -90,8 +92,9 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
           reason: w.reason || 'Withdrawal Request',
           created_at: w.created_at,
           status: w.status,
+          token_no: tokenNo, // 👈 Store token number
           raw_data: w,
-          search_key: `txn-${w.id} ${w.utr_no || ''}`.toLowerCase()
+          search_key: `${tokenNo} ${w.utr_no || ''} ${w.reason || ''}`.toLowerCase()
         });
       });
 
@@ -132,18 +135,22 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
 
     setIsProcessing(true);
     try {
+      // 🔥 UNIQUE WITHDRAWAL TOKEN GENERATE KARNA (Jaise: FIX-WTH-98421)
+      const uniqueTokenNo = `FIX-WTH-${Math.floor(100000 + Math.random() * 900000)}`;
+
       const { error: txnError } = await supabase.from('wallet_transactions').insert({
         shop_id: shopUser.id,
         user_type: 'shop',
         amount: amt,
         type: 'debit',
         status: 'pending', 
-        reason: `Shop Withdrawal Request`
+        reason: `Shop Withdrawal Request`,
+        token_no: uniqueTokenNo // 👈 Database mein token number save hoga
       });
 
       if (txnError) throw txnError;
 
-      alert(`✅ ₹${amt} ka withdrawal request Admin ko bhej diya gaya hai!`);
+      alert(`✅ ₹${amt} ka withdrawal request bhej diya gaya hai!\n🎫 Withdrawal Token ID: ${uniqueTokenNo}`);
       setShowWithdraw(false); 
       setWithdrawAmount('');
       fetchShopWalletData(); 
@@ -156,7 +163,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
 
   const pendingClearance = Math.max(0, totalBalance - withdrawableBalance);
 
-  // 🔥 FILTER TRANSACTIONS BASED ON SEARCH QUERY (Order No / Token No / UTR)
+  // FILTER TRANSACTIONS BASED ON SEARCH QUERY
   const filteredTransactions = transactions.filter((txn: any) => {
     if (!searchQuery.trim()) return true;
     const query = searchQuery.toLowerCase().trim();
@@ -207,11 +214,11 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
         </div>
       </div>
 
-      {/* 🔥 NAYA: SEARCH BOX FOR LEDGER HISTORY 🔥 */}
+      {/* SEARCH BOX FOR LEDGER HISTORY */}
       <div style={{ marginBottom: '20px' }}>
         <input 
           type="text"
-          placeholder="🔍 Search by Order No (#FIX...) or Withdrawal Token (TXN-...), UTR..."
+          placeholder="🔍 Search by Order No (#FIX...), Withdrawal Token (FIX-WTH-...), or UTR..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           style={{
@@ -261,7 +268,10 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
                   >
                     <div style={{ flex: 1 }}>
                       <h4 style={{ margin: '0 0 5px 0', fontSize: '14px', color: '#1e293b', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                        <span>{icon}</span> {txn.reason} <span style={{ fontSize: '11px', background: '#e0f2fe', color: '#0369a1', padding: '2px 6px', borderRadius: '4px' }}>Tap for details ➡️</span>
+                        <span>{icon}</span> 
+                        {txn.token_no && <span style={{ background: '#fef3c7', color: '#b45309', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>🎫 {txn.token_no}</span>}
+                        {txn.reason} 
+                        <span style={{ fontSize: '11px', background: '#e0f2fe', color: '#0369a1', padding: '2px 6px', borderRadius: '4px' }}>Details ➡️</span>
                       </h4>
                       <p style={{ margin: 0, fontSize: '12px', color: '#64748b' }}>
                         {new Date(txn.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} 
@@ -341,7 +351,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
               <div>
                 <div style={{ background: '#fef2f2', padding: '15px', borderRadius: '10px', marginBottom: '15px', border: '1px solid #fecaca' }}>
                   <p style={{ margin: '0 0 5px 0', fontSize: '12px', color: '#991b1b' }}>Withdrawal Token ID</p>
-                  <h4 style={{ margin: 0, color: '#b91c1c' }}>#TXN-{selectedTxnDetails.raw_data.id}</h4>
+                  <h4 style={{ margin: 0, color: '#b91c1c' }}>🎫 {selectedTxnDetails.token_no}</h4>
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '15px' }}>
@@ -371,7 +381,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep }: a
 
             <button onClick={() => setSelectedTxnDetails(null)} style={{ width: '100%', marginTop: '20px', padding: '12px', background: '#0f172a', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
               Close Details
-            </button>
+            </Link>
           </div>
         </div>
       )}
