@@ -30,6 +30,11 @@ export default function OrderDetailsView({
   now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
   const minDateTime = now.toISOString().slice(0, 16); 
 
+  // 🔥 PAYMENT VERIFICATION LOGIC 🔥
+  const paymentModeRaw = String(selectedOrder?.payment_mode || selectedOrder?.payment_method || '').toUpperCase();
+  const isUpiOrder = paymentModeRaw.includes('UPI') || paymentModeRaw.includes('UTR') || paymentModeRaw.includes('WALLET');
+  const isVerified = selectedOrder?.is_payment_verified === true;
+
   const getProductDetailsArray = (order: any) => {
     if (!order) return [];
     let details = order.product_details || order.items || order.products || order.cart_items || order.cart_details || order.order_items;
@@ -187,8 +192,9 @@ export default function OrderDetailsView({
   // 🔥 CALENDAR ACTION FUNCTIONS 🔥
   // ==========================================
   const handleActionClick = (action: string) => {
-    if (action === 'accepted' && selectedOrder?.payment_method === 'UPI' && selectedOrder?.payment_status === 'pending') {
-      alert("Admin dwara payment verify hone ka intezar karein.");
+    // 🔥 NEW LOCK CHECK 🔥
+    if (action === 'accepted' && isUpiOrder && !isVerified) {
+      alert("⚠️ Admin dwara payment verify hone ka intezar karein. Verification ke baad hi aap order accept kar sakte hain.");
       return;
     }
     setDateTimeAction(action);
@@ -744,6 +750,13 @@ export default function OrderDetailsView({
         </div>
       )}
 
+      {/* 🔥 NEW: PAYMENT VERIFICATION WARNING BANNER 🔥 */}
+      {isUpiOrder && !isVerified && !['cancelled', 'refunded', 'payment failed / rejected'].includes(s) && (
+        <div style={{ backgroundColor: 'rgba(245,158,11,0.1)', borderLeft: '4px solid #f59e0b', padding: '15px', marginBottom: '20px', borderRadius: '6px', color: '#fcd34d', fontWeight: 'bold', fontSize: '14px', border: '1px solid rgba(245,158,11,0.3)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span>⏳</span> PAYMENT VERIFICATION PENDING: Customer ne UPI se pay kiya hai. Admin ke verify karte hi 'Accept' button unlock ho jayega.
+        </div>
+      )}
+
       {/* Customer Details - Fully Responsive */}
       <div style={{ backgroundColor: '#0f172a', padding: '25px 20px 20px', borderRadius: '12px', marginBottom: '25px', border: '1px solid #334155', position: 'relative' }}>
         <div style={{ position: 'absolute', top: '-12px', left: '20px', background: '#38bdf8', color: '#0f172a', padding: '2px 10px', borderRadius: '4px', fontWeight: 'bold', fontSize: '12px' }}>CUSTOMER DETAILS</div>
@@ -1101,26 +1114,28 @@ export default function OrderDetailsView({
       ) : null}
 
       {/* ==========================================
-          🔥 ALL ACTION BUTTONS (WITH CALENDAR LOGIC) 🔥
+          🔥 ALL ACTION BUTTONS (WITH LOCK LOGIC) 🔥
           ========================================== */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
         
         {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
           <>
-            {/* ACCEPT BUTTON (MODIFIED FOR CALENDAR) */}
+            {/* 🔥 ACCEPT BUTTON WITH PAYMENT VERIFICATION LOCK 🔥 */}
             {['accepted', 'processing', 'completed', 'delivered'].includes(s) ? (
                 <span style={{ ...actionBtnStyle, backgroundColor: '#1e293b', border: '1px solid #10b981', color: '#10b981' }}>Order Accepted ✅</span>
-            ) : (selectedOrder?.payment_method === 'UPI' && selectedOrder?.payment_status === 'failed') ? (
-                <button disabled style={{ ...actionBtnStyle, backgroundColor: '#ef4444', cursor: 'not-allowed' }}>❌ Fake Payment</button>
-            ) : (selectedOrder?.payment_method === 'UPI' && selectedOrder?.payment_status === 'pending') ? (
-                <button disabled style={{ ...actionBtnStyle, backgroundColor: '#475569', cursor: 'not-allowed' }}>🔒 Waiting for Admin</button>
+            ) : (isUpiOrder && (selectedOrder?.status?.toLowerCase() === 'payment failed / rejected' || selectedOrder?.payment_status === 'failed')) ? (
+                <button disabled style={{ ...actionBtnStyle, backgroundColor: '#ef4444', cursor: 'not-allowed' }}>❌ Fake/Failed Payment</button>
+            ) : (isUpiOrder && !isVerified) ? (
+                <button disabled style={{ ...actionBtnStyle, backgroundColor: '#475569', cursor: 'not-allowed', opacity: 0.8 }}>🔒 Waiting for Admin Approval</button>
             ) : (
-                <button onClick={() => handleActionClick('accepted')} style={{ ...actionBtnStyle, backgroundColor: '#10b981' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : (selectedOrder?.payment_method === 'UPI' ? '✅ Payment Secured (Accept)' : '✅ Accept Order (COD)')}</button>
+                <button onClick={() => handleActionClick('accepted')} style={{ ...actionBtnStyle, backgroundColor: '#10b981' }} disabled={isCompleted || isProcessing}>
+                    {isProcessing ? '⏳...' : (isUpiOrder ? '✅ Payment Verified (Accept)' : '✅ Accept Order (COD)')}
+                </button>
             )}
 
             <button onClick={() => sendToCustomerApproval(selectedOrder.id)} style={{ ...actionBtnStyle, backgroundColor: '#f59e0b' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '⚠️ Send to Customer Approval'}</button>
             
-            {/* OUT FOR DELIVERY BUTTON (MODIFIED FOR CALENDAR) */}
+            {/* OUT FOR DELIVERY BUTTON */}
             <button onClick={() => handleActionClick('out_for_delivery')} style={{ ...actionBtnStyle, backgroundColor: '#a855f7' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '🛵 Mark Out for Delivery'}</button>
           </>
         )}
@@ -1133,7 +1148,7 @@ export default function OrderDetailsView({
         )}
         
         {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
-          /* RESCHEDULE BUTTON (MODIFIED FOR CALENDAR) */
+          /* RESCHEDULE BUTTON */
           <button onClick={() => handleActionClick('rescheduled')} style={{ ...actionBtnStyle, backgroundColor: '#6366f1' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '⏱️ Reschedule Delivery'}</button>
         )}
         

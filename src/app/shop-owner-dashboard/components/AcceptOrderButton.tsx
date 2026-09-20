@@ -7,6 +7,7 @@ export default function AcceptOrderButton({
   currentStatus, 
   paymentMethod, 
   paymentStatus, 
+  isPaymentVerified, // 🔥 नया प्रॉप्स: डेटाबेस का असली वेरिफिकेशन स्टेटस (true/false)
   onStatusChange 
 }: any) {
   const [loading, setLoading] = useState(false);
@@ -16,10 +17,13 @@ export default function AcceptOrderButton({
   // 🔥 आज की तारीख निकाल रहे हैं ताकि पुरानी तारीख (Back Date) सेलेक्ट ना हो सके
   const today = new Date().toISOString().split('T')[0];
 
+  // यह चेक करने के लिए कि क्या यह आर्डर UPI/Online payment वाला है
+  const isUpiOrder = String(paymentMethod || '').toUpperCase().includes('UPI') || String(paymentMethod || '').toUpperCase().includes('UTR');
+
   const handleInitialClick = () => {
-    // Safety check
-    if (paymentMethod === 'UPI' && paymentStatus === 'pending') {
-      alert("Admin dwara payment verify hone ka intezar karein.");
+    // 🔥 सेफ्टी चेक: अगर UPI आर्डर है और एडमिन ने वेरीफाई नहीं किया है
+    if (isUpiOrder && !isPaymentVerified) {
+      alert("⚠️ Admin dwara payment verify (approve) hone ka intezar karein.");
       return;
     }
     // अगर सब सही है, तो कैलेंडर दिखाओ
@@ -35,7 +39,6 @@ export default function AcceptOrderButton({
     setLoading(true);
     
     // 🔥 डेटाबेस अपडेट: स्टेटस 'accepted' और साथ में डेट भी सेव होगी
-    // (ध्यान दें: आपके Supabase table 'orders' में 'expected_delivery_date' नाम का कॉलम होना चाहिए, अगर कॉलम का नाम अलग है तो यहाँ बदल लें)
     const { error } = await supabase
       .from('orders')
       .update({ 
@@ -48,7 +51,7 @@ export default function AcceptOrderButton({
 
     if (error) {
       console.error("Order accept error:", error.message);
-      alert("Kuch galat ho gaya.");
+      alert("Kuch galat ho gaya: " + error.message);
     } else {
       alert("✅ Order Successfully Accept Kar Liya Gaya!");
       setShowDatePicker(false);
@@ -56,30 +59,31 @@ export default function AcceptOrderButton({
     }
   };
 
-  if (['accepted', 'processing', 'completed', 'delivered'].includes(currentStatus)) {
+  if (['accepted', 'processing', 'completed', 'delivered'].includes((currentStatus || '').toLowerCase())) {
     return <span style={{ color: '#10b981', fontWeight: 'bold' }}>Accepted ✅</span>;
   }
 
-  // 🔥 UPI Payment Verification Logic 🔥
-  if (paymentMethod === 'UPI') {
-    if (paymentStatus === 'pending' || !paymentStatus) {
+  // 🔥 UPI Payment Verification Logic (अगर UPI है और अभी तक वेरीफाई नहीं हुआ है) 🔥
+  if (isUpiOrder) {
+    if (!isPaymentVerified && paymentStatus?.toLowerCase() !== 'failed') {
       return (
         <button 
           disabled
           style={{ padding: '8px 16px', backgroundColor: '#475569', color: '#cbd5e1', border: '1px solid #94a3b8', borderRadius: '5px', cursor: 'not-allowed', fontWeight: 'bold' }}
+          title="Admin dwara UTR approve hone ka intezar hai"
         >
           🔒 Waiting for Admin
         </button>
       );
     }
     
-    if (paymentStatus === 'failed') {
+    if (paymentStatus?.toLowerCase() === 'failed' || paymentStatus?.toLowerCase() === 'rejected') {
       return (
         <button 
           disabled
           style={{ padding: '8px 16px', backgroundColor: '#ef4444', color: 'white', border: 'none', borderRadius: '5px', cursor: 'not-allowed', fontWeight: 'bold' }}
         >
-          ❌ Fake Payment
+          ❌ Fake/Rejected Payment
         </button>
       );
     }
@@ -117,13 +121,13 @@ export default function AcceptOrderButton({
     );
   }
 
-  // 🔥 Default (COD ya UPI Verified) Button 🔥
+  // 🔥 Default (COD या UTR Verified) Button 🔥
   return (
     <button 
       onClick={handleInitialClick} 
       style={{ padding: '10px 20px', backgroundColor: '#10b981', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontWeight: 'bold', fontSize: '15px' }}
     >
-      {paymentMethod === 'UPI' ? "✅ Payment Secured (Accept)" : "✅ Accept Order (COD)"}
+      {isUpiOrder ? "✅ Payment Verified (Accept)" : "✅ Accept Order (COD)"}
     </button>
   );
 }

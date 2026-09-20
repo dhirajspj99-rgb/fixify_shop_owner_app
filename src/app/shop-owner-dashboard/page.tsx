@@ -9,6 +9,8 @@ import ShopWalletPassbook from './components/ShopWalletPassbook';
 import ShopProfile from './components/ShopProfile';
 import AdminSupportTab from './components/AdminSupportTab';
 
+const ADMIN_COMMISSION_PERCENTAGE = 0.05;
+
 export default function ShopOwnerDashboard() {
   const router = useRouter();  
   const [activeTab, setActiveTab] = useState('sales');
@@ -37,15 +39,15 @@ export default function ShopOwnerDashboard() {
   const playAlertSound = () => {
     try {
       const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-      audio.play().catch(e => console.log("Auto-play blocked by browser. User needs to interact first."));
+      audio.play().catch(e => console.log("Auto-play blocked by browser."));
     } catch(e) {}
   };
 
   useEffect(() => { 
     fetchAuthAndData(); 
     
-    // 🔥 REAL-TIME ORDERS & CUSTOMER CHATS
-    const ordersSubscription = supabase.channel('realtime-orders').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => { 
+    // 🔥 REAL-TIME ORDERS & UTR VERIFICATION LISTENER 🔥
+    const ordersSubscription = supabase.channel('realtime-shop-orders').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => { 
         if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
             const updatedOrder = payload.new;
 
@@ -66,7 +68,7 @@ export default function ShopOwnerDashboard() {
                     setNotifications(prev => [{ id: Date.now(), title: '📦 New Order Received!', desc: `Order #${updatedOrder.order_no || updatedOrder.id} - ₹${updatedOrder.total_amount}`, type: 'order', refId: updatedOrder.id, isRead: false }, ...prev]);
                 }
                 
-                // 🔔 NEW CUSTOMER MESSAGE ALERT
+                // 🔔 NEW CUSTOMER MESSAGE OR ADMIN VERIFICATION ALERT
                 if (payload.eventType === 'UPDATE' && exists) {
                     const oldMsgs = exists.messages || [];
                     if (parsedMsgs.length > oldMsgs.length) {
@@ -99,15 +101,10 @@ export default function ShopOwnerDashboard() {
     };
   }, [currentShop?.id]); 
 
-  // ==========================================
-  // 🔥 NOTIFICATION CLICK HANDLER 🔥
-  // ==========================================
   const handleNotificationClick = (notif: any) => {
-    // Mark as read
     setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, isRead: true } : n));
     setShowNotifMenu(false);
 
-    // Auto-Routing Logic
     if (notif.type === 'order' || notif.type === 'order_chat') {
         setActiveTab('orders');
         setTargetOrderId(notif.refId); 
@@ -167,6 +164,7 @@ export default function ShopOwnerDashboard() {
 
   const fetchProducts = async () => { const { data } = await supabase.from('products').select('*'); if (data) setProducts(data); };
   
+  // 🔥 FETCH ORDERS WITH is_payment_verified COLUMN 🔥
   const fetchOrders = async (shopIdToFetch?: string | number) => {
     const sid = shopIdToFetch !== undefined ? shopIdToFetch : currentShop?.id;
     if (!sid) return; 
@@ -178,7 +176,11 @@ export default function ShopOwnerDashboard() {
         let parsedMsgs = order.messages;
         if (typeof parsedMsgs === 'string') { try { parsedMsgs = JSON.parse(parsedMsgs); } catch(e) { parsedMsgs = []; } }
         if (!Array.isArray(parsedMsgs)) parsedMsgs = [];
-        return { ...order, messages: parsedMsgs };
+        return { 
+          ...order, 
+          messages: parsedMsgs,
+          is_payment_verified: order.is_payment_verified ?? false // 👈 Real-time verification flag
+        };
       });
 
       const finalOrders = parsedOrders.filter(o => {
@@ -200,15 +202,6 @@ export default function ShopOwnerDashboard() {
           await supabase.auth.signOut(); 
           router.push('/'); 
       } 
-  };
-
-  const handleConfirmPrimePayment = async () => {
-    alert("✅ Welcome to Fixifiy Prime! Payment of ₹999 recorded.");
-    if(currentShop?.id) {
-       const { error } = await supabase.from('shops').update({ is_prime: true }).eq('id', currentShop.id);
-       if (!error) setCurrentShop({...currentShop, is_prime: true});
-    }
-    setIsPrimeModalOpen(false);
   };
 
   return (
@@ -237,28 +230,27 @@ export default function ShopOwnerDashboard() {
         
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
           
-          {/* 🔥 NOTIFICATION BELL WITH DROPDOWN 🔥 */}
           <div style={{ position: 'relative' }}>
              <button onClick={() => setShowNotifMenu(!showNotifMenu)} style={{...editBtn, backgroundColor: '#334155', position: 'relative', fontSize: '16px', padding: '8px 12px'}}>
-               🔔
-               {unreadCount > 0 && <span style={{ position: 'absolute', top: '-5px', right: '-5px', background: '#ef4444', color: 'white', borderRadius: '50%', padding: '2px 6px', fontSize: '10px' }}>{unreadCount}</span>}
+              🔔
+              {unreadCount > 0 && <span style={{ position: 'absolute', top: '-5px', right: '-5px', background: '#ef4444', color: 'white', borderRadius: '50%', padding: '2px 6px', fontSize: '10px' }}>{unreadCount}</span>}
              </button>
              
              {showNotifMenu && (
                <div style={{ position: 'absolute', top: '45px', right: '0', width: '280px', backgroundColor: '#1e293b', border: '1px solid #38bdf8', borderRadius: '12px', zIndex: 1000, boxShadow: '0 10px 25px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
-                 <div style={{ padding: '12px 15px', backgroundColor: '#0284c7', color: 'white', fontWeight: 'bold', fontSize: '14px' }}>Notifications</div>
-                 <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
-                    {notifications.length === 0 ? (
-                        <div style={{ padding: '20px', textAlign: 'center', color: '#64748b', fontSize: '13px' }}>No new notifications</div>
-                    ) : (
-                        notifications.map((n) => (
-                            <div key={n.id} onClick={() => handleNotificationClick(n)} style={{ padding: '12px 15px', borderBottom: '1px solid #334155', cursor: 'pointer', backgroundColor: n.isRead ? '#1e293b' : '#0f172a', transition: '0.2s' }}>
-                                <div style={{ fontSize: '14px', fontWeight: 'bold', color: n.isRead ? '#94a3b8' : '#38bdf8', marginBottom: '4px' }}>{n.title}</div>
-                                <div style={{ fontSize: '12px', color: '#cbd5e1' }}>{n.desc}</div>
-                            </div>
-                        ))
-                    )}
-                 </div>
+                  <div style={{ padding: '12px 15px', backgroundColor: '#0284c7', color: 'white', fontWeight: 'bold', fontSize: '14px' }}>Notifications</div>
+                  <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                     {notifications.length === 0 ? (
+                         <div style={{ padding: '20px', textAlign: 'center', color: '#64748b', fontSize: '13px' }}>No new notifications</div>
+                     ) : (
+                         notifications.map((n) => (
+                             <div key={n.id} onClick={() => handleNotificationClick(n)} style={{ padding: '12px 15px', borderBottom: '1px solid #334155', cursor: 'pointer', backgroundColor: n.isRead ? '#1e293b' : '#0f172a', transition: '0.2s' }}>
+                                 <div style={{ fontSize: '14px', fontWeight: 'bold', color: n.isRead ? '#94a3b8' : '#38bdf8', marginBottom: '4px' }}>{n.title}</div>
+                                 <div style={{ fontSize: '12px', color: '#cbd5e1' }}>{n.desc}</div>
+                             </div>
+                         ))
+                     )}
+                  </div>
                </div>
              )}
           </div>
@@ -281,7 +273,6 @@ export default function ShopOwnerDashboard() {
       <div style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', width: '100%', boxSizing: 'border-box' }}>
         {(activeTab === 'sales' || activeTab === 'stock') && <SalesAndStockTab activeTab={activeTab} orders={orders} currentShop={currentShop} products={products} fetchProducts={fetchProducts} fetchOrders={fetchOrders} />}
         
-        {/* 🔥 PASSED targetOrderId TO OrdersTab 🔥 */}
         {activeTab === 'orders' && <OrdersTab targetOrderId={targetOrderId} setTargetOrderId={setTargetOrderId} orders={orders} setOrders={setOrders} products={products} currentShop={currentShop} fetchOrders={fetchOrders} fetchProducts={fetchProducts} />}
         
         {activeTab === 'inventory' && <InventoryTab products={products} fetchProducts={fetchProducts} currentShop={currentShop} />}
@@ -290,7 +281,6 @@ export default function ShopOwnerDashboard() {
 
       {isProfileModalOpen && <ShopProfile currentShop={currentShop} setCurrentShop={setCurrentShop} onClose={() => setIsProfileModalOpen(false)} fetchAuthAndData={fetchAuthAndData} idCardUpi={idCardUpi} registrationUpi={registrationUpi} />}
 
-      {/* 🔥 PASSED openAdminChatTrigger TO AdminSupportTab 🔥 */}
       <AdminSupportTab currentShop={currentShop} openTrigger={openAdminChatTrigger} />
 
     </div>

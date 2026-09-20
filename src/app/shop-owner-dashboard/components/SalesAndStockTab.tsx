@@ -1,8 +1,6 @@
 "use client";
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-
-const ADMIN_COMMISSION_PERCENTAGE = 0.05;
 
 export default function SalesAndStockTab({ activeTab, orders, currentShop, products, fetchProducts, fetchOrders }: any) {
   const [salesTimeframe, setSalesTimeframe] = useState('month'); 
@@ -11,7 +9,7 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
   
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
   
-  // 🔥 Stock Room States
+  // Stock Room States
   const [stockSearchTerm, setStockSearchTerm] = useState('');
   const [stockCategory, setStockCategory] = useState('All Categories');
   const [viewPhoto, setViewPhoto] = useState<string | null>(null);
@@ -20,16 +18,34 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
   const [editPrice, setEditPrice] = useState('');
   const [editStock, setEditStock] = useState('');
   const [editImage, setEditImage] = useState(''); 
-  const [editIsCodAvailable, setEditIsCodAvailable] = useState(true); // 🔥 NEW STATE FOR COD EDIT 🔥
+  const [editIsCodAvailable, setEditIsCodAvailable] = useState(true);
 
   const [productToDelete, setProductToDelete] = useState<any>(null);
   const [deletePassword, setDeletePassword] = useState('');
+
+  // 🔥 1. DYNAMIC ADMIN COMMISSION LINKED WITH SUPABASE DATABASE 🔥
+  const [dynamicAdminCommission, setDynamicAdminCommission] = useState(0.05); // Default 5%
+
+  useEffect(() => {
+    const fetchDatabaseCommission = async () => {
+      try {
+        const { data, error } = await supabase.from('app_settings').select('commission_rate').eq('id', 1).maybeSingle();
+        if (data && data.commission_rate !== undefined) {
+          // Database se aayi value (jaise 5.00) ko fraction (0.05) mein convert kar rahe hain
+          setDynamicAdminCommission(Number(data.commission_rate) / 100);
+        }
+      } catch (e) {
+        console.warn("Commission load error:", e);
+      }
+    };
+    fetchDatabaseCommission();
+  }, []);
 
   const safeShopId = currentShop?.id ? String(currentShop.id) : null;
   const allShopOrders = (orders || []).filter((o: any) => safeShopId && String(o.shop_id) === safeShopId);
   const shopProducts = (products || []).filter((p: any) => safeShopId && String(p.shop_id) === safeShopId);
 
-  // 🔥 IMPORTANT FIX: Sales mein sirf "Completed" ya "Delivered" order count honge
+  // Sales mein sirf "Completed" ya "Delivered" order count honge
   const completedShopOrders = allShopOrders.filter((o: any) => {
     const s = String(o.status || '').toLowerCase().trim();
     return s === 'completed' || s === 'delivered';
@@ -46,11 +62,12 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
   startOfWeek.setDate(now.getDate() - distanceToMonday);
   startOfWeek.setHours(0, 0, 0, 0);
 
+  // 🔥 2. CALCULATE FINANCES USING DYNAMIC COMMISSION 🔥
   const calculateFinances = (order: any) => {
     const totalBill = Number(order.total_amount || 0);
     const deliveryCharge = Number(order.delivery_charge || order.delivery_fee || 0);
     const itemTotal = Math.max(0, totalBill - deliveryCharge); 
-    const adminComm = itemTotal * ADMIN_COMMISSION_PERCENTAGE; 
+    const adminComm = itemTotal * dynamicAdminCommission; // Database connected commission
     const netEarning = itemTotal - adminComm; 
     return { totalBill, deliveryCharge, itemTotal, adminComm, netEarning };
   };
@@ -130,7 +147,7 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
 
   const exportToExcel = () => {
     if (filteredSalesOrders.length === 0) return alert("Koi data nahi hai.");
-    let csvContent = "data:text/csv;charset=utf-8,Date,Order ID,Customer Name,Phone,Total Bill,Delivery Charge,Item Total,Admin Comm (5%),Your Net Payout\n";
+    let csvContent = `data:text/csv;charset=utf-8,Date,Order ID,Customer Name,Phone,Total Bill,Delivery Charge,Item Total,Admin Comm (${dynamicAdminCommission * 100}%),Your Net Payout\n`;
     filteredSalesOrders.forEach((o: any) => {
       const calc = calculateFinances(o);
       const date = new Date(o.created_at).toLocaleDateString('en-IN');
@@ -157,7 +174,6 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
     printWindow.onload = () => printWindow.print();
   };
 
-  // 🔥 UPDATE STOCK WITH COD OPTION 🔥
   const updateStockProduct = async () => {
     if (!editPrice || !editStock) return alert("Price aur Stock khali nahi chhod sakte!");
     try {
@@ -165,7 +181,7 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
         price: Number(editPrice), 
         total_stock: Number(editStock), 
         image_url: editImage,
-        is_cod_available: editIsCodAvailable // Database mein save hoga
+        is_cod_available: editIsCodAvailable 
       }).eq('id', editingProduct.id);
       
       if (error) throw error;
@@ -185,7 +201,6 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
     } catch (e: any) { alert("Error: " + e.message); }
   };
 
-  // 🔥 QUICK TOGGLE FUNCTION 🔥
   const togglePaymentMode = async (productId: number, currentStatus: boolean) => {
     const newStatus = !currentStatus; 
     const { error } = await supabase.from('products').update({ is_cod_available: newStatus }).eq('id', productId);
@@ -212,7 +227,7 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
 
   return (
     <div>
-      {/* 🚀 SALES TAB - AB SIRF LEDGER DIKHEGA 🚀 */}
+      {/* 🚀 SALES TAB - LEDGER & ANALYTICS */}
       {activeTab === 'sales' && (
         <div style={{ animation: 'fadeIn 0.5s ease-in-out' }}>
           
@@ -271,8 +286,8 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
           <div style={{ background: 'linear-gradient(90deg, #022c22, #064e3b)', padding: '25px', borderRadius: '16px', border: '1px solid #10b981', marginBottom: '30px', boxShadow: '0 4px 15px rgba(16, 185, 129, 0.2)' }}>
               <h3 style={{ margin: '0 0 15px 0', color: '#34d399', display: 'flex', alignItems: 'center', gap: '10px' }}>💰 Filtered Payout Summary (Excluding Delivery)</h3>
               <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px', marginBottom: '12px' }}><span style={{ color: '#cbd5e1', fontSize: '16px' }}>Total Item Sales (Minus Delivery):</span><strong style={{ color: '#f8fafc', fontSize: '20px' }}>₹ {filteredGrossItems.toLocaleString()}</strong></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px', marginBottom: '12px' }}><span style={{ color: '#fca5a5', fontSize: '16px' }}>Admin Commission Deducted (5%):</span><strong style={{ color: '#f87171', fontSize: '20px' }}>- ₹ {filteredFee.toLocaleString()}</strong></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span style={{ color: '#6ee7b7', fontWeight: 'bold', fontSize: '18px' }}>Your Net Bank Earning (95%):</span><strong style={{ color: '#10b981', fontSize: '28px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>₹ {filteredNet.toLocaleString()}</strong></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px', marginBottom: '12px' }}><span style={{ color: '#fca5a5', fontSize: '16px' }}>Admin Commission Deducted ({dynamicAdminCommission * 100}%):</span><strong style={{ color: '#f87171', fontSize: '20px' }}>- ₹ {filteredFee.toLocaleString()}</strong></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span style={{ color: '#6ee7b7', fontWeight: 'bold', fontSize: '18px' }}>Your Net Bank Earning:</span><strong style={{ color: '#10b981', fontSize: '28px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>₹ {filteredNet.toLocaleString()}</strong></div>
           </div>
 
           <h3 style={{ borderBottom: '2px solid #334155', paddingBottom: '10px', marginTop: '30px', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -376,7 +391,6 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
                 </div>
               )}
 
-              {/* 🔥 EDIT FORM POPUP (Updated with Payment Mode) 🔥 */}
               {editingProduct && (
                 <div style={modalOverlayStyle}>
                   <div style={{...modalContentStyle, maxWidth: '350px'}}>
@@ -392,7 +406,6 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
                     <label style={{color: '#94a3b8', fontSize: '12px', marginTop: '10px', display: 'block'}}>Image URL (Photo Link)</label>
                     <input type="text" value={editImage} onChange={e => setEditImage(e.target.value)} style={inputStyle} placeholder="https://..." />
                     
-                    {/* 🔥 COD EDIT RADIO BUTTONS 🔥 */}
                     <div style={{ marginTop: '15px' }}>
                       <label style={{color: '#94a3b8', fontSize: '12px', fontWeight: 'bold'}}>Payment Mode</label>
                       <div style={{ display: 'flex', gap: '15px', marginTop: '5px', backgroundColor: '#0f172a', padding: '12px', borderRadius: '6px', border: '1px solid #334155' }}>
@@ -445,13 +458,10 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
                             <div>
                               <strong style={{fontSize: '18px', color: '#f8fafc', display: 'block'}}>{p.name} {p.is_heavy && <span style={{fontSize: '14px'}}>🚛</span>}</strong>
                               
-                              {/* 🔥 CATEGORY & QUICK TOGGLE BUTTON FOR COD 🔥 */}
                               <div style={{color: '#94a3b8', fontSize: '12px', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap'}}>
                                 <span style={{fontSize: '13px', color: '#94a3b8', background: '#0f172a', padding: '2px 8px', borderRadius: '4px', display: 'inline-block'}}>{p.category}</span>
-                                
                                 <button 
                                   onClick={() => togglePaymentMode(p.id, p.is_cod_available !== false)}
-                                  title="Click karke payment mode change karein"
                                   style={{
                                      backgroundColor: p.is_cod_available !== false ? '#065f46' : '#075985',
                                      color: '#f8fafc', border: '1px solid', borderColor: p.is_cod_available !== false ? '#10b981' : '#38bdf8', 
@@ -475,7 +485,6 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
                           </div>
                           
                           <div style={{ display: 'flex', gap: '10px' }}>
-                            {/* 🔥 EDIT BUTTON PE CLICK PAR COD STATE BHI SET HO RAHI HAI 🔥 */}
                             <button onClick={() => { 
                               setEditingProduct(p); 
                               setEditPrice(p.price); 
@@ -539,7 +548,7 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#94a3b8' }}><span>Gross Bill Amount:</span><strong>₹{calc.totalBill.toFixed(2)}</strong></div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#f87171' }}><span>Delivery Charge Deducted:</span><strong>- ₹{calc.deliveryCharge.toFixed(2)}</strong></div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#a7f3d0' }}><span>Total Item Amount:</span><strong>₹{calc.itemTotal.toFixed(2)}</strong></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', color: '#fca5a5', borderBottom: '1px solid rgba(255,255,255,0.2)', paddingBottom: '12px' }}><span>Admin Comm. (5%):</span><strong>- ₹{calc.adminComm.toFixed(2)}</strong></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', color: '#fca5a5', borderBottom: '1px solid rgba(255,255,255,0.2)', paddingBottom: '12px' }}><span>Admin Comm. ({dynamicAdminCommission * 100}%):</span><strong>- ₹{calc.adminComm.toFixed(2)}</strong></div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#fff' }}><span style={{ fontSize: '16px', fontWeight: 'bold' }}>Your Net Payout:</span><strong style={{ fontSize: '24px', color: '#10b981', background: '#fff', padding: '4px 10px', borderRadius: '6px' }}>₹{calc.netEarning.toFixed(2)}</strong></div>
                   </>
                 );
@@ -558,5 +567,5 @@ const actionBtnStyle: React.CSSProperties = { padding: '12px 20px', border: 'non
 const filterBtnStyle = (active: boolean, isCustom: boolean = false): React.CSSProperties => ({ padding: '10px 20px', borderRadius: '8px', border: '1px solid #334155', fontWeight: 'bold', cursor: 'pointer', transition: '0.3s', backgroundColor: active ? (isCustom ? '#f59e0b' : '#38bdf8') : '#0f172a', color: active ? '#0f172a' : '#cbd5e1', boxShadow: active ? '0 4px 10px rgba(0,0,0,0.3)' : 'none' });
 const inputStyle: React.CSSProperties = { display: 'block', width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #334155', backgroundColor: '#1e293b', color: 'white', fontSize: '14px', boxSizing: 'border-box' };
 const editBtn: React.CSSProperties = { border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', transition: '0.2s' };
-const modalOverlayStyle: React.CSSProperties = { position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(15, 23, 42, 0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999, padding: '20px', backdropFilter: 'blur(4px)' };
+const modalOverlayStyle: React.CSSProperties = { position: 'fixed', top: '0', left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(15, 23, 42, 0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999, padding: '20px', backdropFilter: 'blur(4px)' };
 const modalContentStyle: React.CSSProperties = { backgroundColor: '#1e293b', padding: '30px', borderRadius: '16px', width: '100%', maxWidth: '450px', maxHeight: '90vh', overflowY: 'auto', border: '1px solid #38bdf8', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)' };
