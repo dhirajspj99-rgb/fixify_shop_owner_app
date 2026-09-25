@@ -29,35 +29,27 @@ export default function OrderDetailsView({
   const minDateTime = now.toISOString().slice(0, 16); 
 
   // 🔥 DYNAMIC COMMISSION STATES 🔥
-  const [defaultCommission, setDefaultCommission] = useState(0.05); // Default 5%
   const [categoryRates, setCategoryRates] = useState<any>({}); // Category wise %
 
-  // Fetch Commission from app_settings
+  // Fetch Category Commissions from app_settings
   useEffect(() => {
     const fetchCommissionSettings = async () => {
       try {
         const { data, error } = await supabase
           .from('app_settings')
-          .select('commission_rate, category_commissions')
+          .select('category_commissions')
           .limit(1)
           .single();
 
-        if (data) {
-          // Default Rate Setup
-          if (data.commission_rate != null) {
-            let rate = Number(data.commission_rate);
-            if (!isNaN(rate)) {
-                if (rate > 1) rate = rate / 100; // if 5 then 0.05
-                setDefaultCommission(rate);
-            }
+        if (data && data.category_commissions) {
+          let parsedCats = data.category_commissions;
+          if (typeof parsedCats === 'string') {
+             try { parsedCats = JSON.parse(parsedCats); } catch(e){}
           }
-          // Category Rates Setup
-          if (data.category_commissions) {
-            setCategoryRates(data.category_commissions);
-          }
+          setCategoryRates(parsedCats || {});
         }
       } catch (err) {
-        console.error("Error fetching commissions:", err);
+        console.error("Error fetching category commissions:", err);
       }
     };
     fetchCommissionSettings();
@@ -96,46 +88,6 @@ export default function OrderDetailsView({
     return n.includes('delivery') || n.includes('transport') || n.includes('shipping') || n.includes('freight') || n.includes('km') || n.includes('bhada') || n.includes('kiraya') || c.includes('service') || c.includes('transport');
   };
 
-  // 🔥 NEW CATEGORY-WISE EARNING CALCULATOR 🔥
-  const calculateEarnings = (order: any) => {
-    const items = getShopItems(order);
-    let totalAmt = 0;
-    let adminFee = 0;
-
-    items.forEach((item: any) => {
-      const itemTotal = Number(item.price || 0);
-      const cat = String(item.category || '').toLowerCase().trim();
-      
-      let rate = defaultCommission;
-      
-      // Check if item's category exists in categoryRates object
-      if (categoryRates && Object.keys(categoryRates).length > 0) {
-         // Find matching category (case-insensitive)
-         const matchedKey = Object.keys(categoryRates).find(k => k.toLowerCase().trim() === cat);
-         if (matchedKey && categoryRates[matchedKey] !== undefined) {
-             let catRate = Number(categoryRates[matchedKey]);
-             if (catRate > 1) catRate = catRate / 100;
-             rate = catRate;
-         }
-      }
-
-      totalAmt += itemTotal;
-      adminFee += (itemTotal * rate);
-    });
-
-    return {
-      totalAmount: totalAmt,
-      adminCommissionFee: Number(adminFee.toFixed(2)),
-      shopEarnings: Number((totalAmt - adminFee).toFixed(2))
-    };
-  };
-
-  const getShopTotal = (order: any) => {
-    if (!order) return 0;
-    const { totalAmount } = calculateEarnings(order);
-    return totalAmount;
-  };
-
   const findLiveProduct = (item: any) => {
     if (!item || !products) return null;
     const itemId = item.product_id || item.item_id || item.id;
@@ -151,6 +103,56 @@ export default function OrderDetailsView({
       if (!dbName) return false;
       return dbName === itemNameRaw || dbName.includes(itemNameRaw) || itemNameRaw.includes(dbName);
     });
+  };
+
+  // 🔥 UPDATED: 100% SETTINGS MANAGER SYNCED CALCULATOR 🔥
+  const calculateEarnings = (order: any) => {
+    const items = getShopItems(order);
+    let totalAmt = 0;
+    let adminFee = 0;
+
+    items.forEach((item: any) => {
+      const itemTotal = Number(item.price || 0);
+      
+      // 1. Live product se category nikalna
+      const liveProduct = findLiveProduct(item);
+      const cat = String(item.category || liveProduct?.category || '').toLowerCase().trim();
+      
+      let finalPercentage = 0;
+      
+      // 2. Category match karna
+      if (categoryRates && Object.keys(categoryRates).length > 0) {
+         const matchedKey = Object.keys(categoryRates).find(k => k.toLowerCase().trim() === cat);
+         
+         if (matchedKey && categoryRates[matchedKey] !== undefined) {
+             finalPercentage = Number(categoryRates[matchedKey]); // Eg. 2% for grocery
+         } else if (categoryRates['other'] !== undefined) {
+             finalPercentage = Number(categoryRates['other']); // Fallback to 'other'
+         } else if (categoryRates['general store'] !== undefined) {
+             finalPercentage = Number(categoryRates['general store']); // Fallback to 'general store'
+         }
+      } else {
+         finalPercentage = 5; // Absolute safe fallback agar settings manager set hi na ho
+      }
+
+      // Convert percentage to decimal (e.g., 5% -> 0.05)
+      let rateDecimal = finalPercentage / 100;
+
+      totalAmt += itemTotal;
+      adminFee += (itemTotal * rateDecimal);
+    });
+
+    return {
+      totalAmount: totalAmt,
+      adminCommissionFee: Number(adminFee.toFixed(2)),
+      shopEarnings: Number((totalAmt - adminFee).toFixed(2))
+    };
+  };
+
+  const getShopTotal = (order: any) => {
+    if (!order) return 0;
+    const { totalAmount } = calculateEarnings(order);
+    return totalAmount;
   };
 
   const getOrderColor = (status: string) => {

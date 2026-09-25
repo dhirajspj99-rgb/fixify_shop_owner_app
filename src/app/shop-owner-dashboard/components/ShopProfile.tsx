@@ -211,11 +211,12 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
     setUploadingDoc(null);
   };
 
-  // 🔥 5. UPI DEEP LINK PAYMENT & UTR SUBMIT FOR ID CARD 🔥
-  const idCardCharge = appSettings?.id_card_charge || 200;
+  // 🔥 5. LINKED WITH app_settings.idCardUpi & id_card_charge 🔥
+  const idCardCharge = Number(appSettings?.id_card_charge) || 200;
 
   const handleUpiPaymentClick = () => {
-    const upiLink = `upi://pay?pa=${appSettings?.idCardUpi || 'admin@upi'}&pn=Fixifiy%20Technology&am=${idCardCharge}&cu=INR&tn=Certificate_Payment_${currentShop.phone}`;
+    const targetUpi = appSettings?.idCardUpi || appSettings?.wallet_upi || 'admin@upi';
+    const upiLink = `upi://pay?pa=${targetUpi}&pn=Fixifiy%20Technology&am=${idCardCharge}&cu=INR&tn=Certificate_Payment_${currentShop.phone}`;
     window.location.href = upiLink;
   };
 
@@ -226,6 +227,7 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
 
     setIsRequestingCert(true);
     try {
+      // 1. Update Shop Table
       const { error } = await supabase
         .from('shops')
         .update({ 
@@ -235,6 +237,19 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
         .eq('id', currentShop.id);
 
       if (error) throw error;
+
+      // 2. Insert into Wallet Transactions for Admin Action Center
+      const { error: txError } = await supabase.from('wallet_transactions').insert({
+        shop_id: currentShop.id,
+        user_type: 'shop',
+        amount: idCardCharge,
+        type: 'add',
+        status: 'pending',
+        token_no: utrNumber,
+        reason: `ID Card / Certificate Payment (UTR: ${utrNumber})`
+      });
+
+      if (txError) throw txError;
 
       alert("✅ UTR Submit ho gaya hai! Admin dwara payment verify hone ke baad Certificate download ka option aa jayega.");
       setCurrentShop((prev: any) => ({ ...prev, certificate_status: 'requested', certificate_utr: utrNumber }));
@@ -256,7 +271,8 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
 
   const handlePremiumUpiClick = () => {
     const planPrice = premiumPlans[selectedPlan] || 0;
-    const upiLink = `upi://pay?pa=${appSettings?.premiumUpi || 'admin@upi'}&pn=Fixifiy%20Technology&am=${planPrice}&cu=INR&tn=Premium_${selectedPlan}_${currentShop.phone}`;
+    const targetUpi = appSettings?.premiumUpi || appSettings?.wallet_upi || 'admin@upi';
+    const upiLink = `upi://pay?pa=${targetUpi}&pn=Fixifiy%20Technology&am=${planPrice}&cu=INR&tn=Premium_${selectedPlan}_${currentShop.phone}`;
     window.location.href = upiLink;
   };
 
@@ -265,6 +281,8 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
 
     setIsRequestingPremium(true);
     try {
+      const planPrice = premiumPlans[selectedPlan] || 0;
+
       const { error } = await supabase.from('shops').update({ 
         premium_status: 'requested', 
         premium_plan_selected: selectedPlan,
@@ -272,6 +290,18 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
       }).eq('id', currentShop.id);
 
       if (error) throw error;
+
+      const { error: txError } = await supabase.from('wallet_transactions').insert({
+        shop_id: currentShop.id,
+        user_type: 'shop',
+        amount: planPrice,
+        type: 'add',
+        status: 'pending',
+        token_no: premiumUtr,
+        reason: `Premium Membership Payment - ${selectedPlan.replace('_', ' ')} (UTR: ${premiumUtr})`
+      });
+
+      if (txError) throw txError;
 
       alert("✅ Premium Subscription ki request bhej di gayi hai. Admin jald verify karenge.");
       setCurrentShop((prev: any) => ({ ...prev, premium_status: 'requested', premium_plan_selected: selectedPlan, premium_utr: premiumUtr }));
@@ -469,7 +499,11 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
         <div style={{...modalOverlayStyle, zIndex: 10005}}>
           <div style={{...modalContentStyle, textAlign: 'center', border: '2px solid #38bdf8', maxWidth: '400px'}}>
             <h2 style={{color: '#38bdf8', margin: '0 0 10px 0'}}>Pay ₹{idCardCharge} via UPI</h2>
-            {appSettings?.idCardQr && <img src={appSettings.idCardQr} alt="QR Code" style={{ width: '150px', height: '150px', borderRadius: '8px', marginBottom: '15px' }} />}
+            {appSettings?.idCardQr ? (
+              <img src={appSettings.idCardQr} alt="QR Code" style={{ width: '150px', height: '150px', borderRadius: '8px', marginBottom: '15px' }} />
+            ) : appSettings?.wallet_upi && (
+              <p style={{color: '#38bdf8', fontSize: '12px', margin: '0 0 10px 0'}}>UPI: {appSettings.idCardUpi || appSettings.wallet_upi}</p>
+            )}
             <p style={{color: '#cbd5e1', fontSize: '14px', marginBottom: '20px'}}>
               Niche diye button par click karein apna GPay, PhonePe ya Paytm kholne ke liye. Payment ke baad UTR number yahan dalein.
             </p>
@@ -515,7 +549,11 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
             <h2 style={{color: '#eab308', margin: '0 0 10px 0'}}>Premium Plan ({selectedPlan.replace('_', ' ')})</h2>
             <h3 style={{color: '#fff', margin: '0 0 15px 0'}}>Amount: ₹{premiumPlans[selectedPlan]}</h3>
             
-            {appSettings?.premiumQr && <img src={appSettings.premiumQr} alt="QR Code" style={{ width: '150px', height: '150px', borderRadius: '8px', marginBottom: '15px', border: '2px solid #eab308' }} />}
+            {appSettings?.premiumQr ? (
+              <img src={appSettings.premiumQr} alt="QR Code" style={{ width: '150px', height: '150px', borderRadius: '8px', marginBottom: '15px', border: '2px solid #eab308' }} />
+            ) : appSettings?.wallet_upi && (
+              <p style={{color: '#eab308', fontSize: '12px', margin: '0 0 10px 0'}}>UPI: {appSettings.premiumUpi || appSettings.wallet_upi}</p>
+            )}
             
             <button onClick={handlePremiumUpiClick} style={{ background: '#10b981', color: 'white', padding: '15px', width: '100%', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer', marginBottom: '20px' }}>
               📱 Open UPI App to Pay
