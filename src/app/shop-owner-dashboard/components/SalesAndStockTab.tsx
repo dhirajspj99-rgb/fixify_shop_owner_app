@@ -23,16 +23,25 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
   const [productToDelete, setProductToDelete] = useState<any>(null);
   const [deletePassword, setDeletePassword] = useState('');
 
-  // 🔥 1. DYNAMIC ADMIN COMMISSION LINKED WITH SUPABASE DATABASE 🔥
+  // 🔥 1. DYNAMIC & CATEGORY-WISE ADMIN COMMISSION 🔥
   const [dynamicAdminCommission, setDynamicAdminCommission] = useState(0.05); // Default 5%
+  const [categoryRates, setCategoryRates] = useState<any>({}); // Category wise %
 
   useEffect(() => {
     const fetchDatabaseCommission = async () => {
       try {
-        const { data, error } = await supabase.from('app_settings').select('commission_rate').eq('id', 1).maybeSingle();
-        if (data && data.commission_rate !== undefined) {
-          // Database se aayi value (jaise 5.00) ko fraction (0.05) mein convert kar rahe hain
-          setDynamicAdminCommission(Number(data.commission_rate) / 100);
+        const { data, error } = await supabase.from('app_settings').select('commission_rate, category_commissions').eq('id', 1).maybeSingle();
+        if (data) {
+          if (data.commission_rate !== undefined && data.commission_rate !== null) {
+            let rate = Number(data.commission_rate);
+            if (rate > 1) rate = rate / 100;
+            setDynamicAdminCommission(rate);
+          }
+          if (data.category_commissions) {
+            let parsed = data.category_commissions;
+            if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+            setCategoryRates(parsed);
+          }
         }
       } catch (e) {
         console.warn("Commission load error:", e);
@@ -62,14 +71,63 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
   startOfWeek.setDate(now.getDate() - distanceToMonday);
   startOfWeek.setHours(0, 0, 0, 0);
 
-  // 🔥 2. CALCULATE FINANCES USING DYNAMIC COMMISSION 🔥
+  const getProductDetailsArray = (order: any) => {
+    let details = order.product_details || order.items || order.cart_items || order.products || [];
+    if (Array.isArray(details)) return details;
+    try { return JSON.parse(details); } catch (e) { return []; }
+  };
+
+  // 🔥 2. CALCULATE FINANCES (ITEM BY ITEM CATEGORY WISE) 🔥
   const calculateFinances = (order: any) => {
+    const items = getProductDetailsArray(order);
+    let calcItemTotal = 0;
+    let calcAdminComm = 0;
+
+    if (items.length > 0) {
+      items.forEach((item: any) => {
+        const n = String(item.name || item.product_name || '').toLowerCase();
+        const c = String(item.category || '').toLowerCase().trim();
+        
+        const isExcluded = ['labour', 'mistri', 'mechanic', 'repair'].some(w => n.includes(w) || c.includes(w)) || item.type === 'labour';
+        const isDelivery = n.includes('delivery') || n.includes('transport') || n.includes('shipping') || n.includes('freight');
+
+        if (!isExcluded && !isDelivery) {
+          const qty = Number(item.quantity || item.qty || 1);
+          const lineTotal = Number(item.price || 0) * qty;
+
+          let rate = dynamicAdminCommission;
+          if (categoryRates && Object.keys(categoryRates).length > 0) {
+             const matchedKey = Object.keys(categoryRates).find(k => k.toLowerCase().trim() === c);
+             if (matchedKey && categoryRates[matchedKey] !== undefined) {
+               let catRate = Number(categoryRates[matchedKey]);
+               if (catRate > 1) catRate = catRate / 100;
+               rate = catRate;
+             }
+          }
+
+          calcItemTotal += lineTotal;
+          calcAdminComm += (lineTotal * rate);
+        }
+      });
+    }
+
     const totalBill = Number(order.total_amount || 0);
     const deliveryCharge = Number(order.delivery_charge || order.delivery_fee || 0);
-    const itemTotal = Math.max(0, totalBill - deliveryCharge); 
-    const adminComm = itemTotal * dynamicAdminCommission; // Database connected commission
-    const netEarning = itemTotal - adminComm; 
-    return { totalBill, deliveryCharge, itemTotal, adminComm, netEarning };
+    
+    // Fallback if item calculation fails
+    if (calcItemTotal === 0 && totalBill > 0) {
+       calcItemTotal = Math.max(0, totalBill - deliveryCharge);
+       calcAdminComm = calcItemTotal * dynamicAdminCommission;
+    }
+
+    const netEarning = calcItemTotal - calcAdminComm; 
+    return { 
+      totalBill, 
+      deliveryCharge, 
+      itemTotal: calcItemTotal, 
+      adminComm: calcAdminComm, 
+      netEarning 
+    };
   };
 
   let grossTodaysSales = 0, grossMonthlySales = 0, grossYearlySales = 0, grossLifetimeSales = 0;
@@ -107,12 +165,6 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
   const itemsSoldFiltered: any = {};
   let filteredGrossItems = 0, filteredNet = 0, filteredFee = 0;
 
-  const getProductDetailsArray = (order: any) => {
-    let details = order.product_details || order.items || order.cart_items || [];
-    if (Array.isArray(details)) return details;
-    try { return JSON.parse(details); } catch (e) { return []; }
-  };
-
   filteredSalesOrders.forEach((o: any) => {
     const calc = calculateFinances(o);
     filteredGrossItems += calc.itemTotal; 
@@ -147,7 +199,7 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
 
   const exportToExcel = () => {
     if (filteredSalesOrders.length === 0) return alert("Koi data nahi hai.");
-    let csvContent = `data:text/csv;charset=utf-8,Date,Order ID,Customer Name,Phone,Total Bill,Delivery Charge,Item Total,Admin Comm (${dynamicAdminCommission * 100}%),Your Net Payout\n`;
+    let csvContent = `data:text/csv;charset=utf-8,Date,Order ID,Customer Name,Phone,Total Bill,Delivery Charge,Item Total,Admin Comm Deducted,Your Net Payout\n`;
     filteredSalesOrders.forEach((o: any) => {
       const calc = calculateFinances(o);
       const date = new Date(o.created_at).toLocaleDateString('en-IN');
@@ -163,10 +215,10 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
     if (filteredSalesOrders.length === 0) return alert("Koi data nahi hai.");
     const printWindow = window.open('', '_blank');
     if (!printWindow) return alert("Popup blocker is active.");
-    let html = `<html><head><title>Sales Report</title><style>body { font-family: sans-serif; padding: 20px; } table { width: 100%; border-collapse: collapse; margin-top: 20px; } th, td { border: 1px solid #aaa; padding: 8px; text-align: left; }</style></head><body><h2>Sales Ledger Report</h2><p>Shop: <strong>${currentShop?.name || 'N/A'}</strong></p><p>Total Item Sales: Rs ${filteredGrossItems} | Net Earnings: Rs ${filteredNet}</p><table><thead><tr><th>Date</th><th>Order ID</th><th>Delivery</th><th>Item Total</th><th>Net Earning</th></tr></thead><tbody>`;
+    let html = `<html><head><title>Sales Report</title><style>body { font-family: sans-serif; padding: 20px; } table { width: 100%; border-collapse: collapse; margin-top: 20px; } th, td { border: 1px solid #aaa; padding: 8px; text-align: left; }</style></head><body><h2>Sales Ledger Report</h2><p>Shop: <strong>${currentShop?.name || 'N/A'}</strong></p><p>Total Item Sales: Rs ${filteredGrossItems.toFixed(2)} | Net Earnings: Rs ${filteredNet.toFixed(2)}</p><table><thead><tr><th>Date</th><th>Order ID</th><th>Delivery</th><th>Item Total</th><th>Net Earning</th></tr></thead><tbody>`;
     filteredSalesOrders.forEach((o: any) => {
       const calc = calculateFinances(o);
-      html += `<tr><td>${new Date(o.created_at).toLocaleDateString('en-IN')}</td><td>#${o.order_no || o.id}</td><td>Rs ${calc.deliveryCharge}</td><td>Rs ${calc.itemTotal}</td><td>Rs ${calc.netEarning.toFixed(2)}</td></tr>`;
+      html += `<tr><td>${new Date(o.created_at).toLocaleDateString('en-IN')}</td><td>#${o.order_no || o.id}</td><td>Rs ${calc.deliveryCharge}</td><td>Rs ${calc.itemTotal.toFixed(2)}</td><td>Rs ${calc.netEarning.toFixed(2)}</td></tr>`;
     });
     html += `</tbody></table></body></html>`;
     printWindow.document.write(html);
@@ -286,7 +338,7 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
           <div style={{ background: 'linear-gradient(90deg, #022c22, #064e3b)', padding: '25px', borderRadius: '16px', border: '1px solid #10b981', marginBottom: '30px', boxShadow: '0 4px 15px rgba(16, 185, 129, 0.2)' }}>
               <h3 style={{ margin: '0 0 15px 0', color: '#34d399', display: 'flex', alignItems: 'center', gap: '10px' }}>💰 Filtered Payout Summary (Excluding Delivery)</h3>
               <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px', marginBottom: '12px' }}><span style={{ color: '#cbd5e1', fontSize: '16px' }}>Total Item Sales (Minus Delivery):</span><strong style={{ color: '#f8fafc', fontSize: '20px' }}>₹ {filteredGrossItems.toLocaleString()}</strong></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px', marginBottom: '12px' }}><span style={{ color: '#fca5a5', fontSize: '16px' }}>Admin Commission Deducted ({dynamicAdminCommission * 100}%):</span><strong style={{ color: '#f87171', fontSize: '20px' }}>- ₹ {filteredFee.toLocaleString()}</strong></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px', marginBottom: '12px' }}><span style={{ color: '#fca5a5', fontSize: '16px' }}>Admin Commission Deducted:</span><strong style={{ color: '#f87171', fontSize: '20px' }}>- ₹ {filteredFee.toLocaleString()}</strong></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span style={{ color: '#6ee7b7', fontWeight: 'bold', fontSize: '18px' }}>Your Net Bank Earning:</span><strong style={{ color: '#10b981', fontSize: '28px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>₹ {filteredNet.toLocaleString()}</strong></div>
           </div>
 
@@ -463,9 +515,9 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
                                 <button 
                                   onClick={() => togglePaymentMode(p.id, p.is_cod_available !== false)}
                                   style={{
-                                     backgroundColor: p.is_cod_available !== false ? '#065f46' : '#075985',
-                                     color: '#f8fafc', border: '1px solid', borderColor: p.is_cod_available !== false ? '#10b981' : '#38bdf8', 
-                                     padding: '3px 8px', borderRadius: '12px', cursor: 'pointer', fontSize: '11px', fontWeight: 'bold', marginLeft: '5px'
+                                      backgroundColor: p.is_cod_available !== false ? '#065f46' : '#075985',
+                                      color: '#f8fafc', border: '1px solid', borderColor: p.is_cod_available !== false ? '#10b981' : '#38bdf8', 
+                                      padding: '3px 8px', borderRadius: '12px', cursor: 'pointer', fontSize: '11px', fontWeight: 'bold', marginLeft: '5px'
                                   }}
                                 >
                                   {p.is_cod_available !== false ? '🔄 💵 COD (Change)' : '🔄 💳 Online Only (Change)'}
@@ -548,7 +600,7 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#94a3b8' }}><span>Gross Bill Amount:</span><strong>₹{calc.totalBill.toFixed(2)}</strong></div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#f87171' }}><span>Delivery Charge Deducted:</span><strong>- ₹{calc.deliveryCharge.toFixed(2)}</strong></div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#a7f3d0' }}><span>Total Item Amount:</span><strong>₹{calc.itemTotal.toFixed(2)}</strong></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', color: '#fca5a5', borderBottom: '1px solid rgba(255,255,255,0.2)', paddingBottom: '12px' }}><span>Admin Comm. ({dynamicAdminCommission * 100}%):</span><strong>- ₹{calc.adminComm.toFixed(2)}</strong></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', color: '#fca5a5', borderBottom: '1px solid rgba(255,255,255,0.2)', paddingBottom: '12px' }}><span>Admin Comm. Deducted:</span><strong>- ₹{calc.adminComm.toFixed(2)}</strong></div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#fff' }}><span style={{ fontSize: '16px', fontWeight: 'bold' }}>Your Net Payout:</span><strong style={{ fontSize: '24px', color: '#10b981', background: '#fff', padding: '4px 10px', borderRadius: '6px' }}>₹{calc.netEarning.toFixed(2)}</strong></div>
                   </>
                 );

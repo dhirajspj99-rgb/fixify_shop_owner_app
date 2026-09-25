@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
 const ProfileField = ({ label, value, isEditing, onChange, type="text", placeholder="" }: any) => (
@@ -19,8 +19,19 @@ const ProfileField = ({ label, value, isEditing, onChange, type="text", placehol
   </div>
 );
 
-export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetchAuthAndData, idCardUpi, registrationUpi }: any) {
+export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetchAuthAndData }: any) {
   
+  // 🔥 FETCH DYNAMIC APP SETTINGS (UPI, QR & Charges) 🔥
+  const [appSettings, setAppSettings] = useState<any>({});
+  
+  useEffect(() => {
+    const fetchSettings = async () => {
+      const { data } = await supabase.from('app_settings').select('*').single();
+      if (data) setAppSettings(data);
+    };
+    fetchSettings();
+  }, []);
+
   // 🔥 View / Edit States 🔥
   const [isEditing, setIsEditing] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
@@ -52,6 +63,12 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
   const [isCertPaymentModalOpen, setIsCertPaymentModalOpen] = useState(false); 
   const [isRequestingCert, setIsRequestingCert] = useState(false);
   const [utrNumber, setUtrNumber] = useState('');
+
+  // 🔥 PREMIUM SUBSCRIPTION STATES 🔥
+  const [isPremiumModalOpen, setIsPremiumModalOpen] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState<string>('');
+  const [premiumUtr, setPremiumUtr] = useState('');
+  const [isRequestingPremium, setIsRequestingPremium] = useState(false);
 
   // PASSWORD CHANGE STATES
   const [showPasswordSection, setShowPasswordSection] = useState(false);
@@ -194,9 +211,11 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
     setUploadingDoc(null);
   };
 
-  // 🔥 5. UPI DEEP LINK PAYMENT & UTR SUBMIT 🔥
+  // 🔥 5. UPI DEEP LINK PAYMENT & UTR SUBMIT FOR ID CARD 🔥
+  const idCardCharge = appSettings?.id_card_charge || 200;
+
   const handleUpiPaymentClick = () => {
-    const upiLink = `upi://pay?pa=${idCardUpi || 'your-admin-upi@upi'}&pn=Fixifiy%20Technology&am=200&cu=INR&tn=Certificate_Payment_${currentShop.phone}`;
+    const upiLink = `upi://pay?pa=${appSettings?.idCardUpi || 'admin@upi'}&pn=Fixifiy%20Technology&am=${idCardCharge}&cu=INR&tn=Certificate_Payment_${currentShop.phone}`;
     window.location.href = upiLink;
   };
 
@@ -227,7 +246,41 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
     setIsRequestingCert(false);
   };
 
-  // 🔥 6. PDF DOWNLOAD IN SEPARATE TAB 🔥
+  // 🔥 6. PREMIUM SUBSCRIPTION PAYMENT (DYNAMIC) 🔥
+  const premiumPlans = appSettings?.premium_plans || { '1_month': 199, '3_months': 499, '9_months': 1299, '1_year': 1499 };
+  
+  const openPremiumModal = (planId: string) => {
+    setSelectedPlan(planId);
+    setIsPremiumModalOpen(true);
+  };
+
+  const handlePremiumUpiClick = () => {
+    const planPrice = premiumPlans[selectedPlan] || 0;
+    const upiLink = `upi://pay?pa=${appSettings?.premiumUpi || 'admin@upi'}&pn=Fixifiy%20Technology&am=${planPrice}&cu=INR&tn=Premium_${selectedPlan}_${currentShop.phone}`;
+    window.location.href = upiLink;
+  };
+
+  const handlePremiumUtrSubmit = async () => {
+    if (!premiumUtr.trim() || premiumUtr.length < 10) return alert("❌ Kripya sahi 12-digit UTR Number dalein.");
+
+    setIsRequestingPremium(true);
+    try {
+      const { error } = await supabase.from('shops').update({ 
+        premium_status: 'requested', 
+        premium_plan_selected: selectedPlan,
+        premium_utr: premiumUtr 
+      }).eq('id', currentShop.id);
+
+      if (error) throw error;
+
+      alert("✅ Premium Subscription ki request bhej di gayi hai. Admin jald verify karenge.");
+      setCurrentShop((prev: any) => ({ ...prev, premium_status: 'requested', premium_plan_selected: selectedPlan, premium_utr: premiumUtr }));
+      setIsPremiumModalOpen(false);
+    } catch (err: any) { alert("Error: " + err.message); }
+    setIsRequestingPremium(false);
+  };
+
+  // 🔥 7. PDF DOWNLOAD IN SEPARATE TAB 🔥
   const handleDownloadCertificate = async () => {
     const element = document.getElementById('print-certificate-container');
     if (!element) return;
@@ -276,7 +329,10 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
             )}
           </div>
           <div>
-            <h3 style={{ color: '#f8fafc', margin: '0 0 5px 0', fontSize: '18px' }}>{currentShop?.name || 'My Shop'}</h3>
+            <h3 style={{ color: '#f8fafc', margin: '0 0 5px 0', fontSize: '18px' }}>
+              {currentShop?.name || 'My Shop'}
+              {currentShop?.premium_status === 'active' && <span title="Premium Member" style={{marginLeft: '8px'}}>👑</span>}
+            </h3>
             <p style={{ color: '#94a3b8', margin: '0 0 5px 0', fontSize: '13px' }}>📞 {currentShop?.phone}</p>
             <span style={{ background: '#0284c7', color: 'white', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold' }}>Shop Owner</span>
           </div>
@@ -333,9 +389,34 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
           )}
         </div>
 
+        {/* 🔥 NEW: PREMIUM SUBSCRIPTION SECTION 🔥 */}
+        <div style={{ borderTop: '2px dashed #eab308', paddingTop: '20px', marginTop: '10px' }}>
+          <h3 style={{ color: '#eab308', fontSize: '18px', marginBottom: '5px', textAlign: 'center' }}>👑 Premium Membership</h3>
+          <p style={{ color: '#94a3b8', fontSize: '13px', marginBottom: '15px', textAlign: 'center' }}>Get priority orders, lower commissions, and exclusive benefits.</p>
+
+          {currentShop?.premium_status === 'active' ? (
+            <div style={{ background: 'rgba(234, 179, 8, 0.1)', border: '1px solid #eab308', padding: '15px', borderRadius: '10px', textAlign: 'center' }}>
+              <p style={{ color: '#eab308', fontWeight: 'bold', fontSize: '16px', margin: '0 0 5px 0' }}>✅ You are a Premium Member</p>
+              <p style={{ color: '#94a3b8', fontSize: '13px', margin: 0 }}>Valid till: {new Date(currentShop?.premium_end_date).toLocaleDateString('en-IN')}</p>
+            </div>
+          ) : currentShop?.premium_status === 'requested' ? (
+             <div style={{ background: '#1e293b', border: '1px solid #f59e0b', padding: '15px', borderRadius: '10px', textAlign: 'center' }}>
+               <p style={{ color: '#f59e0b', fontWeight: 'bold', margin: '0 0 5px 0' }}>⏳ Premium Request Pending</p>
+               <p style={{ color: '#94a3b8', fontSize: '13px', margin: 0 }}>Admin is verifying your UTR ({currentShop?.premium_utr}).</p>
+             </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
+              <button onClick={() => openPremiumModal('1_month')} style={premiumBtnStyle}>1 Month<br/><span style={{fontSize:'16px'}}>₹{premiumPlans['1_month']}</span></button>
+              <button onClick={() => openPremiumModal('3_months')} style={premiumBtnStyle}>3 Months<br/><span style={{fontSize:'16px'}}>₹{premiumPlans['3_months']}</span></button>
+              <button onClick={() => openPremiumModal('9_months')} style={premiumBtnStyle}>9 Months<br/><span style={{fontSize:'16px'}}>₹{premiumPlans['9_months']}</span></button>
+              <button onClick={() => openPremiumModal('1_year')} style={{...premiumBtnStyle, background: 'linear-gradient(135deg, #eab308, #b45309)'}}>1 Year<br/><span style={{fontSize:'16px'}}>₹{premiumPlans['1_year']}</span></button>
+            </div>
+          )}
+        </div>
+
         {/* 🔥 NEW CERTIFICATE PREVIEW AND DOWNLOAD SECTION 🔥 */}
         {currentShop?.id && (
-          <div style={{ borderTop: '2px dashed #334155', paddingTop: '20px', marginTop: '10px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <div style={{ borderTop: '2px dashed #334155', paddingTop: '20px', marginTop: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <h3 style={{ color: '#facc15', fontSize: '18px', marginBottom: '5px', textAlign: 'center' }}>📜 Certified Partner Document</h3>
             <p style={{ color: '#94a3b8', fontSize: '13px', marginBottom: '20px', textAlign: 'center' }}>Aapki Dukan ka Verified Certificate aur Terms & Conditions</p>
             
@@ -350,7 +431,7 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
               </div>
             ) : (
               <button onClick={() => setIsCertPaymentModalOpen(true)} style={{ background: 'linear-gradient(90deg, #f59e0b, #d97706)', color: 'white', padding: '15px 25px', border: 'none', borderRadius: '10px', marginBottom: '20px', fontWeight: '900', cursor: 'pointer', fontSize: '16px', boxShadow: '0 4px 15px rgba(245, 158, 11, 0.4)', width: '100%' }}>
-                💳 Pay ₹200 via UPI & Get Certificate
+                💳 Pay ₹{idCardCharge} via UPI & Get Certificate
               </button>
             )}
           </div>
@@ -383,34 +464,12 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
         </div>
       )}
 
-      {/* 🔥 HIDDEN A4 CERTIFICATE (FOR PDF EXPORT) 🔥 */}
-      <div style={{ position: 'absolute', top: '-10000px', left: '-10000px' }}>
-        <div id="print-certificate-container" style={{ width: '210mm', backgroundColor: '#fff', color: '#000', boxSizing: 'border-box', fontFamily: 'Arial, sans-serif', padding: '20mm' }}>
-          <div style={{ border: '10px solid #1e293b', padding: '20mm', textAlign: 'center', height: '257mm', boxSizing: 'border-box' }}>
-            <h1 style={{ color: '#0284c7', fontSize: '32px', marginBottom: '5px' }}>FIXIFIY TECHNOLOGY</h1>
-            <p style={{ fontSize: '14px', color: '#64748b', letterSpacing: '2px', textTransform: 'uppercase', marginBottom: '30px' }}>Verified Partner Certificate</p>
-            <p style={{ fontSize: '16px', color: '#334155', marginBottom: '20px' }}>This is certified that</p>
-            <h2 style={{ fontSize: '28px', color: '#0f172a', borderBottom: '2px solid #cbd5e1', display: 'inline-block', paddingBottom: '5px', marginBottom: '20px' }}>{currentShop?.name}</h2>
-            <p style={{ fontSize: '15px', color: '#334155', lineHeight: '1.6', maxWidth: '400px', margin: '0 auto 40px auto' }}>
-              is a verified and trusted partner shop offering hardware, building materials, and fabrication services under Fixifiy ecosystem.
-            </p>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '60px', padding: '0 20px' }}>
-              <div>
-                <p style={{ borderTop: '1px solid #000', paddingTop: '5px', fontWeight: 'bold', fontSize: '14px' }}>Authorized Signatory</p>
-              </div>
-              <div>
-                <p style={{ borderTop: '1px solid #000', paddingTop: '5px', fontWeight: 'bold', fontSize: '14px' }}>Fixifiy Admin</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 🔥 UPI PAYMENT & UTR SUBMIT MODAL 🔥 */}
+      {/* 🔥 UPI PAYMENT & UTR SUBMIT MODAL (For ID Card) 🔥 */}
       {isCertPaymentModalOpen && (
         <div style={{...modalOverlayStyle, zIndex: 10005}}>
           <div style={{...modalContentStyle, textAlign: 'center', border: '2px solid #38bdf8', maxWidth: '400px'}}>
-            <h2 style={{color: '#38bdf8', margin: '0 0 10px 0'}}>Pay via UPI App</h2>
+            <h2 style={{color: '#38bdf8', margin: '0 0 10px 0'}}>Pay ₹{idCardCharge} via UPI</h2>
+            {appSettings?.idCardQr && <img src={appSettings.idCardQr} alt="QR Code" style={{ width: '150px', height: '150px', borderRadius: '8px', marginBottom: '15px' }} />}
             <p style={{color: '#cbd5e1', fontSize: '14px', marginBottom: '20px'}}>
               Niche diye button par click karein apna GPay, PhonePe ya Paytm kholne ke liye. Payment ke baad UTR number yahan dalein.
             </p>
@@ -419,7 +478,7 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
               onClick={handleUpiPaymentClick}
               style={{ background: '#10b981', color: 'white', padding: '15px', width: '100%', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer', marginBottom: '25px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}
             >
-              📱 Click here to Pay ₹200
+              📱 Click here to Pay ₹{idCardCharge}
             </button>
 
             <div style={{ textAlign: 'left', background: '#0f172a', padding: '15px', borderRadius: '8px', border: '1px solid #334155', marginBottom: '20px' }}>
@@ -448,6 +507,56 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
           </div>
         </div>
       )}
+
+      {/* 🔥 UPI PAYMENT MODAL (For Premium) 🔥 */}
+      {isPremiumModalOpen && (
+        <div style={{...modalOverlayStyle, zIndex: 10005}}>
+          <div style={{...modalContentStyle, textAlign: 'center', border: '2px solid #eab308', maxWidth: '400px'}}>
+            <h2 style={{color: '#eab308', margin: '0 0 10px 0'}}>Premium Plan ({selectedPlan.replace('_', ' ')})</h2>
+            <h3 style={{color: '#fff', margin: '0 0 15px 0'}}>Amount: ₹{premiumPlans[selectedPlan]}</h3>
+            
+            {appSettings?.premiumQr && <img src={appSettings.premiumQr} alt="QR Code" style={{ width: '150px', height: '150px', borderRadius: '8px', marginBottom: '15px', border: '2px solid #eab308' }} />}
+            
+            <button onClick={handlePremiumUpiClick} style={{ background: '#10b981', color: 'white', padding: '15px', width: '100%', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer', marginBottom: '20px' }}>
+              📱 Open UPI App to Pay
+            </button>
+
+            <div style={{ textAlign: 'left', background: '#0f172a', padding: '15px', borderRadius: '8px', border: '1px solid #334155', marginBottom: '20px' }}>
+              <label style={{ fontSize: '13px', color: '#94a3b8', display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>Enter 12-Digit UTR / Ref. Number</label>
+              <input type="text" placeholder="e.g. 312345678901" value={premiumUtr} onChange={(e) => setPremiumUtr(e.target.value)} style={{ ...inputStyle, textAlign: 'center' }} />
+            </div>
+
+            <div style={{ display: 'flex', gap: '15px' }}>
+              <button onClick={() => setIsPremiumModalOpen(false)} style={{ padding: '12px', borderRadius: '8px', border: 'none', background: '#334155', color: 'white', flex: 1, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={handlePremiumUtrSubmit} disabled={isRequestingPremium} style={{ padding: '12px', borderRadius: '8px', border: 'none', background: '#eab308', color: 'black', fontWeight:'bold', flex: 1, cursor: 'pointer' }}>{isRequestingPremium ? 'Wait...' : 'Submit UTR'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🔥 HIDDEN A4 CERTIFICATE (FOR PDF EXPORT) 🔥 */}
+      <div style={{ position: 'absolute', top: '-10000px', left: '-10000px' }}>
+        <div id="print-certificate-container" style={{ width: '210mm', backgroundColor: '#fff', color: '#000', boxSizing: 'border-box', fontFamily: 'Arial, sans-serif', padding: '20mm' }}>
+          <div style={{ border: '10px solid #1e293b', padding: '20mm', textAlign: 'center', height: '257mm', boxSizing: 'border-box' }}>
+            <h1 style={{ color: '#0284c7', fontSize: '32px', marginBottom: '5px' }}>FIXIFIY TECHNOLOGY</h1>
+            <p style={{ fontSize: '14px', color: '#64748b', letterSpacing: '2px', textTransform: 'uppercase', marginBottom: '30px' }}>Verified Partner Certificate</p>
+            <p style={{ fontSize: '16px', color: '#334155', marginBottom: '20px' }}>This is certified that</p>
+            <h2 style={{ fontSize: '28px', color: '#0f172a', borderBottom: '2px solid #cbd5e1', display: 'inline-block', paddingBottom: '5px', marginBottom: '20px' }}>{currentShop?.name}</h2>
+            <p style={{ fontSize: '15px', color: '#334155', lineHeight: '1.6', maxWidth: '400px', margin: '0 auto 40px auto' }}>
+              is a verified and trusted partner shop offering hardware, building materials, and fabrication services under Fixifiy ecosystem.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '60px', padding: '0 20px' }}>
+              <div>
+                <p style={{ borderTop: '1px solid #000', paddingTop: '5px', fontWeight: 'bold', fontSize: '14px' }}>Authorized Signatory</p>
+              </div>
+              <div>
+                <p style={{ borderTop: '1px solid #000', paddingTop: '5px', fontWeight: 'bold', fontSize: '14px' }}>Fixifiy Admin</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
   );
 }
@@ -455,3 +564,4 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
 const inputStyle: React.CSSProperties = { display: 'block', width: '100%', padding: '12px', margin: '0', borderRadius: '6px', border: '1px solid #334155', backgroundColor: '#1e293b', color: 'white', boxSizing: 'border-box', outline: 'none', transition: '0.3s' };
 const modalOverlayStyle: React.CSSProperties = { position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10000, padding: '20px', overflowY: 'auto' };
 const modalContentStyle: React.CSSProperties = { backgroundColor: '#1e293b', padding: '30px', borderRadius: '16px', width: '100%', border: '1px solid #38bdf8', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)', margin: 'auto', overflowY: 'auto', maxHeight: '90vh' };
+const premiumBtnStyle: React.CSSProperties = { background: '#334155', color: '#fff', border: '1px solid #eab308', borderRadius: '8px', padding: '12px', fontWeight: 'bold', cursor: 'pointer', textAlign: 'center' };

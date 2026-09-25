@@ -4,8 +4,6 @@ import { supabase } from '@/lib/supabaseClient';
 import PermanentFreeCall from '@/components/PermanentFreeCall';
 import { printShopInvoice, printDeliveryChallan, printMiniChallan } from './InvoiceHelper'; 
 
-const ADMIN_COMMISSION_PERCENTAGE = 0.05;
-
 export default function OrderDetailsView({
   selectedOrder, setSelectedOrder, orders, setOrders, 
   products, currentShop, fetchOrders, fetchProducts, deliveryBoys, setOrderSubTab
@@ -29,6 +27,41 @@ export default function OrderDetailsView({
   const now = new Date();
   now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
   const minDateTime = now.toISOString().slice(0, 16); 
+
+  // 🔥 DYNAMIC COMMISSION STATES 🔥
+  const [defaultCommission, setDefaultCommission] = useState(0.05); // Default 5%
+  const [categoryRates, setCategoryRates] = useState<any>({}); // Category wise %
+
+  // Fetch Commission from app_settings
+  useEffect(() => {
+    const fetchCommissionSettings = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('app_settings')
+          .select('commission_rate, category_commissions')
+          .limit(1)
+          .single();
+
+        if (data) {
+          // Default Rate Setup
+          if (data.commission_rate != null) {
+            let rate = Number(data.commission_rate);
+            if (!isNaN(rate)) {
+                if (rate > 1) rate = rate / 100; // if 5 then 0.05
+                setDefaultCommission(rate);
+            }
+          }
+          // Category Rates Setup
+          if (data.category_commissions) {
+            setCategoryRates(data.category_commissions);
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching commissions:", err);
+      }
+    };
+    fetchCommissionSettings();
+  }, []);
 
   // 🔥 PAYMENT VERIFICATION LOGIC 🔥
   const paymentModeRaw = String(selectedOrder?.payment_mode || selectedOrder?.payment_method || '').toUpperCase();
@@ -63,10 +96,44 @@ export default function OrderDetailsView({
     return n.includes('delivery') || n.includes('transport') || n.includes('shipping') || n.includes('freight') || n.includes('km') || n.includes('bhada') || n.includes('kiraya') || c.includes('service') || c.includes('transport');
   };
 
+  // 🔥 NEW CATEGORY-WISE EARNING CALCULATOR 🔥
+  const calculateEarnings = (order: any) => {
+    const items = getShopItems(order);
+    let totalAmt = 0;
+    let adminFee = 0;
+
+    items.forEach((item: any) => {
+      const itemTotal = Number(item.price || 0);
+      const cat = String(item.category || '').toLowerCase().trim();
+      
+      let rate = defaultCommission;
+      
+      // Check if item's category exists in categoryRates object
+      if (categoryRates && Object.keys(categoryRates).length > 0) {
+         // Find matching category (case-insensitive)
+         const matchedKey = Object.keys(categoryRates).find(k => k.toLowerCase().trim() === cat);
+         if (matchedKey && categoryRates[matchedKey] !== undefined) {
+             let catRate = Number(categoryRates[matchedKey]);
+             if (catRate > 1) catRate = catRate / 100;
+             rate = catRate;
+         }
+      }
+
+      totalAmt += itemTotal;
+      adminFee += (itemTotal * rate);
+    });
+
+    return {
+      totalAmount: totalAmt,
+      adminCommissionFee: Number(adminFee.toFixed(2)),
+      shopEarnings: Number((totalAmt - adminFee).toFixed(2))
+    };
+  };
+
   const getShopTotal = (order: any) => {
     if (!order) return 0;
-    const items = getShopItems(order);
-    return items.reduce((sum: number, item: any) => sum + Number(item.price || 0), 0);
+    const { totalAmount } = calculateEarnings(order);
+    return totalAmount;
   };
 
   const findLiveProduct = (item: any) => {
@@ -106,7 +173,7 @@ export default function OrderDetailsView({
   };
 
   // ==========================================
-  // 🔥 REAL-TIME CHAT LOGIC (JSON Update) 🔥
+  // 🔥 REAL-TIME CHAT LOGIC 🔥
   // ==========================================
   useEffect(() => {
     if (!selectedOrder) return;
@@ -192,7 +259,6 @@ export default function OrderDetailsView({
   // 🔥 CALENDAR ACTION FUNCTIONS 🔥
   // ==========================================
   const handleActionClick = (action: string) => {
-    // 🔥 NEW LOCK CHECK 🔥
     if (action === 'accepted' && isUpiOrder && !isVerified) {
       alert("⚠️ Admin dwara payment verify hone ka intezar karein. Verification ke baad hi aap order accept kar sakte hain.");
       return;
@@ -235,10 +301,10 @@ export default function OrderDetailsView({
       fetchOrders();
       
       if (dateTimeAction === 'accepted' || dateTimeAction === 'out_for_delivery') {
-          setSelectedOrder(null);
-          if(setOrderSubTab) setOrderSubTab('local');
+         setSelectedOrder(null);
+         if(setOrderSubTab) setOrderSubTab('local');
       } else {
-          alert("✅ Delivery Date aur Time successfully update ho gaya!");
+         alert("✅ Delivery Date aur Time successfully update ho gaya!");
       }
     } catch(e:any) {
       alert("Error: " + e.message);
@@ -400,8 +466,9 @@ export default function OrderDetailsView({
         }
       }
 
-      const itemsTotal = getShopTotal(orderToUpdate);
-      const shopDebitAmt = Number((itemsTotal * 0.95).toFixed(2)); 
+      // 🔥 USE DYNAMIC EARNING SYSTEM HERE 🔥
+      const { shopEarnings } = calculateEarnings(orderToUpdate);
+      const shopDebitAmt = shopEarnings; 
 
       if (currentShop?.id) {
           const { data: sData } = await supabase.from('shops').select('balance').eq('id', currentShop.id).single();
@@ -525,9 +592,10 @@ export default function OrderDetailsView({
         }
       }
 
-      const itemsTotal = getShopTotal(orderToUpdate);
-      const shopEarn = Number((itemsTotal * 0.95).toFixed(2));
-      const adminEarn = Number((itemsTotal * 0.05).toFixed(2));
+      // 🔥 USE DYNAMIC EARNING SYSTEM HERE 🔥
+      const { shopEarnings, adminCommissionFee } = calculateEarnings(orderToUpdate);
+      const shopEarn = shopEarnings;
+      const adminEarn = adminCommissionFee;
 
       if (currentShop?.id) {
           const { data: sData } = await supabase.from('shops').select('balance').eq('id', currentShop.id).single();
@@ -700,10 +768,11 @@ export default function OrderDetailsView({
   const isRtoPhase = (s.includes('rto') && s !== 'rto received') || s.includes('fail') || s.includes('undeliver');
   const isRtoCompleted = s === 'rto received';
 
-  const itemsTotalAmt = getShopTotal(selectedOrder);
-  
-  const shopAdminFee = itemsTotalAmt * ADMIN_COMMISSION_PERCENTAGE;
-  const shopEarn = itemsTotalAmt - shopAdminFee;
+  // 🔥 USE DYNAMIC EARNING SYSTEM HERE FOR UI 🔥
+  const orderFinance = calculateEarnings(selectedOrder);
+  const itemsTotalAmt = orderFinance.totalAmount;
+  const shopAdminFee = orderFinance.adminCommissionFee;
+  const shopEarnValue = orderFinance.shopEarnings; 
 
   const currentReturnWindow = selectedOrder?.return_window || (selectedOrder?.allow_return ? '24_hours' : 'none');
 
@@ -750,14 +819,14 @@ export default function OrderDetailsView({
         </div>
       )}
 
-      {/* 🔥 NEW: PAYMENT VERIFICATION WARNING BANNER 🔥 */}
+      {/* 🔥 PAYMENT VERIFICATION WARNING BANNER 🔥 */}
       {isUpiOrder && !isVerified && !['cancelled', 'refunded', 'payment failed / rejected'].includes(s) && (
         <div style={{ backgroundColor: 'rgba(245,158,11,0.1)', borderLeft: '4px solid #f59e0b', padding: '15px', marginBottom: '20px', borderRadius: '6px', color: '#fcd34d', fontWeight: 'bold', fontSize: '14px', border: '1px solid rgba(245,158,11,0.3)', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span>⏳</span> PAYMENT VERIFICATION PENDING: Customer ne UPI se pay kiya hai. Admin ke verify karte hi 'Accept' button unlock ho jayega.
         </div>
       )}
 
-      {/* Customer Details - Fully Responsive */}
+      {/* Customer Details */}
       <div style={{ backgroundColor: '#0f172a', padding: '25px 20px 20px', borderRadius: '12px', marginBottom: '25px', border: '1px solid #334155', position: 'relative' }}>
         <div style={{ position: 'absolute', top: '-12px', left: '20px', background: '#38bdf8', color: '#0f172a', padding: '2px 10px', borderRadius: '4px', fontWeight: 'bold', fontSize: '12px' }}>CUSTOMER DETAILS</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
@@ -783,10 +852,10 @@ export default function OrderDetailsView({
             <span>Items Total:</span> <span>₹{itemsTotalAmt.toLocaleString()}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#f87171', margin: '5px 0' }}>
-            <span>Admin Commission (5%):</span> <span>- ₹{shopAdminFee.toLocaleString()}</span>
+            <span>Admin Commission:</span> <span>- ₹{shopAdminFee.toLocaleString()}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '15px', color: '#4ade80', fontWeight: 'bold', marginTop: '10px', borderTop: '1px solid #334155', paddingTop: '10px' }}>
-            <span>Net Credit to Shop Wallet:</span> <span>₹{shopEarn.toLocaleString()}</span>
+            <span>Net Credit to Shop Wallet:</span> <span>₹{shopEarnValue.toLocaleString()}</span>
           </div>
         </div>
       </div>
@@ -904,7 +973,6 @@ export default function OrderDetailsView({
                 <div style={{ flex: 1, minWidth: '200px' }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', marginBottom: '8px', flexWrap: 'wrap' }}>
                     
-                    {/* 🔥 ENHANCED IMAGE PREVIEW TRIGGER 🔥 */}
                     {itemImage && !isDelivery && (
                       <div 
                         onClick={() => setPreviewImage(itemImage)}
@@ -1023,7 +1091,7 @@ export default function OrderDetailsView({
         </div>
       </div>
 
-      {/* 🔥 NEW: COLLAPSIBLE RETURN POLICY SETTINGS 🔥 */}
+      {/* COLLAPSIBLE RETURN POLICY SETTINGS */}
       <div style={{ backgroundColor: '#0f172a', padding: '20px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '20px' }}>
         <button 
           onClick={() => setShowReturnPolicySettings(!showReturnPolicySettings)}
@@ -1113,9 +1181,7 @@ export default function OrderDetailsView({
         </div>
       ) : null}
 
-      {/* ==========================================
-          🔥 ALL ACTION BUTTONS (WITH LOCK LOGIC) 🔥
-          ========================================== */}
+      {/* ACTION BUTTONS (WITH LOCK LOGIC) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
         
         {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
@@ -1165,9 +1231,7 @@ export default function OrderDetailsView({
         )}
       </div>
 
-      {/* ==========================================
-          🔥 IN-APP CHAT (LOCKED BEFORE ACCEPT) 🔥
-          ========================================== */}
+      {/* IN-APP CHAT (LOCKED BEFORE ACCEPT) */}
       {(() => {
         const isLocked = ['pending', 'new', 'draft', 'new order'].includes(s);
 
@@ -1248,7 +1312,7 @@ export default function OrderDetailsView({
         );
       })()}
 
-      {/* 🔥 ENHANCED IMAGE LIGHTBOX PREVIEW 🔥 */}
+      {/* IMAGE LIGHTBOX PREVIEW */}
       {previewImage && (
         <div 
           style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.9)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 99999, padding: '20px', boxSizing: 'border-box' }} 

@@ -9,23 +9,19 @@ import ShopWalletPassbook from './components/ShopWalletPassbook';
 import ShopProfile from './components/ShopProfile';
 import AdminSupportTab from './components/AdminSupportTab';
 
-const ADMIN_COMMISSION_PERCENTAGE = 0.05;
-
 export default function ShopOwnerDashboard() {
   const router = useRouter();  
   const [activeTab, setActiveTab] = useState('sales');
+  const activeTabRef = useRef(activeTab); // 🔥 Back Button tracking
   
   const [currentShop, setCurrentShop] = useState<any>(null); 
   const [products, setProducts] = useState<any[]>([]); 
   const [orders, setOrders] = useState<any[]>([]); 
   
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false); 
-  const [isPrimeModalOpen, setIsPrimeModalOpen] = useState(false); 
-
+  const isProfileModalOpenRef = useRef(isProfileModalOpen); 
+  
   const [notices, setNotices] = useState<any[]>([]);
-  const [idCardUpi, setIdCardUpi] = useState('admin@upi');
-  const [premiumUpi, setPremiumUpi] = useState('admin@upi');
-  const [registrationUpi, setRegistrationUpi] = useState('admin@upi');
 
   // ==========================================
   // 🔥 SOUND & NOTIFICATION STATES 🔥
@@ -35,6 +31,10 @@ export default function ShopOwnerDashboard() {
   const [targetOrderId, setTargetOrderId] = useState<string | null>(null);
   const [openAdminChatTrigger, setOpenAdminChatTrigger] = useState(0);
 
+  // Sync refs for back button logic
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
+  useEffect(() => { isProfileModalOpenRef.current = isProfileModalOpen; }, [isProfileModalOpen]);
+
   // 🔔 Sound Play Function
   const playAlertSound = () => {
     try {
@@ -43,15 +43,65 @@ export default function ShopOwnerDashboard() {
     } catch(e) {}
   };
 
+  // ==========================================
+  // 🔥 SMART BACK BUTTON (PopState Logic) 🔥
+  // ==========================================
+  useEffect(() => {
+    window.history.pushState(null, '', window.location.href);
+    
+    const handlePopState = () => {
+      if (isProfileModalOpenRef.current) {
+        setIsProfileModalOpen(false);
+        window.history.pushState(null, '', window.location.href);
+      } 
+      else if (activeTabRef.current !== 'sales') {
+        setActiveTab('sales');
+        window.history.pushState(null, '', window.location.href);
+      } 
+      else {
+        if (window.confirm("Aap app se bahar ja rahe hain. Kya aap logout karna chahte hain?")) {
+          handleLogout();
+        } else {
+          window.history.pushState(null, '', window.location.href);
+        }
+      }
+    };
+    
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // ==========================================
+  // 🔥 AUTO DATA CACHING (24 Hours) 🔥
+  // ==========================================
+  useEffect(() => {
+    if (orders.length > 0 && currentShop?.id) {
+      localStorage.setItem(`fixifiy_orders_${currentShop.id}`, JSON.stringify(orders));
+      localStorage.setItem(`fixifiy_orders_time_${currentShop.id}`, Date.now().toString());
+    }
+  }, [orders, currentShop?.id]);
+
+  useEffect(() => {
+    if (products.length > 0) {
+      localStorage.setItem('fixifiy_products', JSON.stringify(products));
+      localStorage.setItem('fixifiy_products_time', Date.now().toString());
+    }
+  }, [products]);
+
+
+  // ==========================================
+  // 🔥 INITIAL LOAD & REAL-TIME LISTENER 🔥
+  // ==========================================
   useEffect(() => { 
     fetchAuthAndData(); 
     
-    // 🔥 REAL-TIME ORDERS & UTR VERIFICATION LISTENER 🔥
     const ordersSubscription = supabase.channel('realtime-shop-orders').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => { 
         if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
             const updatedOrder = payload.new;
 
-            if (updatedOrder.type === 'Labour Booking') return; 
+            // Strict Labour Filter
+            const orderTypeStr = String(updatedOrder.type || '').toLowerCase();
+            if (orderTypeStr.includes('labour')) return; 
             if (currentShop?.id && String(updatedOrder.shop_id) !== String(currentShop.id)) return; 
 
             let parsedMsgs = updatedOrder.messages;
@@ -62,13 +112,11 @@ export default function ShopOwnerDashboard() {
             setOrders(prevOrders => {
                 const exists = prevOrders.find(o => o.id === updatedOrder.id);
                 
-                // 🔔 NEW ORDER ALERT
                 if (payload.eventType === 'INSERT' && !exists) {
                     playAlertSound();
                     setNotifications(prev => [{ id: Date.now(), title: '📦 New Order Received!', desc: `Order #${updatedOrder.order_no || updatedOrder.id} - ₹${updatedOrder.total_amount}`, type: 'order', refId: updatedOrder.id, isRead: false }, ...prev]);
                 }
                 
-                // 🔔 NEW CUSTOMER MESSAGE OR ADMIN VERIFICATION ALERT
                 if (payload.eventType === 'UPDATE' && exists) {
                     const oldMsgs = exists.messages || [];
                     if (parsedMsgs.length > oldMsgs.length) {
@@ -86,7 +134,6 @@ export default function ShopOwnerDashboard() {
         }
     }).subscribe();
 
-    // 🔥 REAL-TIME ADMIN HELP DESK CHATS
     const chatSubscription = supabase.channel('realtime-helpdesk').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'helpdesk_chats' }, (payload) => { 
         const newChat = payload.new;
         if(newChat.sender === 'admin' && String(newChat.shop_id) === String(currentShop?.id)) {
@@ -106,7 +153,7 @@ export default function ShopOwnerDashboard() {
     setShowNotifMenu(false);
 
     if (notif.type === 'order' || notif.type === 'order_chat') {
-        setActiveTab('orders');
+        handleTabChange('orders');
         setTargetOrderId(notif.refId); 
     } else if (notif.type === 'admin_chat') {
         setOpenAdminChatTrigger(prev => prev + 1); 
@@ -116,13 +163,6 @@ export default function ShopOwnerDashboard() {
   const unreadCount = notifications.filter(n => !n.isRead).length;
 
   const fetchAuthAndData = async () => {
-    const { data: settingsData } = await supabase.from('app_settings').select('*').maybeSingle();
-    if (settingsData) {
-      if (settingsData.idCardUpi) setIdCardUpi(settingsData.idCardUpi);
-      if (settingsData.premiumUpi) setPremiumUpi(settingsData.premiumUpi);
-      if (settingsData.registrationUpi) setRegistrationUpi(settingsData.registrationUpi); 
-    }
-
     let phoneNo = '';
     const savedShopData = localStorage.getItem('fixifiy_shop');
     if (savedShopData) {
@@ -152,8 +192,8 @@ export default function ShopOwnerDashboard() {
         return;
     }
     
-    fetchProducts(); 
-    if(shopData?.id) fetchOrders(shopData.id); 
+    fetchProducts(false);
+    if(shopData?.id) fetchOrders(shopData.id, false); 
     fetchNotices(); 
   };
 
@@ -162,12 +202,31 @@ export default function ShopOwnerDashboard() {
     if (data) setNotices(data);
   };
 
-  const fetchProducts = async () => { const { data } = await supabase.from('products').select('*'); if (data) setProducts(data); };
+  const fetchProducts = async (forceRefresh = false) => {
+    if (!forceRefresh) {
+      const cached = localStorage.getItem('fixifiy_products');
+      const time = localStorage.getItem('fixifiy_products_time');
+      if (cached && time && (Date.now() - Number(time) < 86400000)) { 
+         setProducts(JSON.parse(cached));
+         return;
+      }
+    }
+    const { data } = await supabase.from('products').select('*'); 
+    if (data) setProducts(data); 
+  };
   
-  // 🔥 FETCH ORDERS WITH is_payment_verified COLUMN 🔥
-  const fetchOrders = async (shopIdToFetch?: string | number) => {
+  const fetchOrders = async (shopIdToFetch?: string | number, forceRefresh = false) => {
     const sid = shopIdToFetch !== undefined ? shopIdToFetch : currentShop?.id;
     if (!sid) return; 
+
+    if (!forceRefresh) {
+      const cached = localStorage.getItem(`fixifiy_orders_${sid}`);
+      const time = localStorage.getItem(`fixifiy_orders_time_${sid}`);
+      if (cached && time && (Date.now() - Number(time) < 86400000)) { 
+         setOrders(JSON.parse(cached));
+         return;
+      }
+    }
 
     const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false }); 
       
@@ -179,29 +238,44 @@ export default function ShopOwnerDashboard() {
         return { 
           ...order, 
           messages: parsedMsgs,
-          is_payment_verified: order.is_payment_verified ?? false // 👈 Real-time verification flag
+          is_payment_verified: order.is_payment_verified ?? false 
         };
       });
 
       const finalOrders = parsedOrders.filter(o => {
         const oShopId = String(o.shop_id || '').trim();
         const myShopId = String(sid).trim();
-        if (String(o.type || '').trim() === 'Labour Booking') return false; 
-        if (oShopId === myShopId) return true;
-        return false; 
+        if (String(o.type || '').trim().toLowerCase().includes('labour')) return false; 
+        return oShopId === myShopId;
       });
 
       setOrders(finalOrders);
     }
   };
 
+  const handleManualRefresh = () => {
+    fetchProducts(true);
+    fetchOrders(currentShop?.id, true);
+    fetchAuthAndData();
+    alert("✅ Data Successfully Refreshed from Server!");
+  };
+
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab);
+    window.history.pushState(null, '', window.location.href);
+  };
+
   const handleLogout = async () => { 
-      if (window.confirm("Logout karein?")) { 
-          localStorage.removeItem('fixifiy_shop'); 
-          localStorage.removeItem('shop_login_time'); 
-          await supabase.auth.signOut(); 
-          router.push('/'); 
-      } 
+      localStorage.removeItem('fixifiy_shop'); 
+      localStorage.removeItem('shop_login_time'); 
+      localStorage.removeItem('fixifiy_products');
+      localStorage.removeItem('fixifiy_products_time');
+      if (currentShop?.id) {
+        localStorage.removeItem(`fixifiy_orders_${currentShop.id}`);
+        localStorage.removeItem(`fixifiy_orders_time_${currentShop.id}`);
+      }
+      await supabase.auth.signOut(); 
+      router.push('/'); 
   };
 
   return (
@@ -220,7 +294,7 @@ export default function ShopOwnerDashboard() {
       {/* HEADER SECTION */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '15px', position: 'relative' }}>
         
-        <div onClick={() => setActiveTab('sales')} style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+        <div onClick={() => handleTabChange('sales')} style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
           {currentShop?.profile_pic ? <img src={currentShop.profile_pic} style={{ width: '50px', height: '50px', borderRadius: '50%', objectFit: 'cover' }} /> : <div style={{ fontSize: '35px' }}>🏪</div>}
           <div>
             <h1 style={{ color: '#38bdf8', margin: 0, fontSize: '18px' }}>Fixifiy Shop Dashboard</h1>
@@ -230,6 +304,8 @@ export default function ShopOwnerDashboard() {
         
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
           
+          <button onClick={handleManualRefresh} style={{...editBtn, backgroundColor: '#0284c7'}} title="Fetch Fresh Data">🔄 Refresh</button>
+
           <div style={{ position: 'relative' }}>
              <button onClick={() => setShowNotifMenu(!showNotifMenu)} style={{...editBtn, backgroundColor: '#334155', position: 'relative', fontSize: '16px', padding: '8px 12px'}}>
               🔔
@@ -255,18 +331,22 @@ export default function ShopOwnerDashboard() {
              )}
           </div>
 
-          <button onClick={() => setIsProfileModalOpen(true)} style={{...editBtn, backgroundColor: '#3b82f6'}}>⚙️ Profile</button>
-          <button onClick={handleLogout} style={{...editBtn, backgroundColor: '#ef4444'}}>🚪 Logout</button>
+          <button onClick={() => { setIsProfileModalOpen(true); window.history.pushState(null, '', window.location.href); }} style={{...editBtn, backgroundColor: '#3b82f6'}}>⚙️ Profile</button>
+          
+          <button onClick={() => {
+            if (window.confirm("Aap app se bahar ja rahe hain. Kya aap logout karna chahte hain?")) handleLogout();
+          }} style={{...editBtn, backgroundColor: '#ef4444'}}>🚪 Logout</button>
+          
         </div>
       </div>
 
       {/* TABS BUTTONS */}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', overflowX: 'auto', whiteSpace: 'nowrap', paddingBottom: '5px' }}>
-        <button onClick={() => setActiveTab('sales')} style={tabBtn(activeTab === 'sales')}>📈 Sales & Ledger</button>
-        <button onClick={() => setActiveTab('orders')} style={tabBtn(activeTab === 'orders')}>🛒 Orders</button>
-        <button onClick={() => setActiveTab('inventory')} style={tabBtn(activeTab === 'inventory')}>📦 Inventory</button>
-        <button onClick={() => setActiveTab('wallet')} style={tabBtn(activeTab === 'wallet')}>💳 Wallet</button>
-        <button onClick={() => setActiveTab('stock')} style={tabBtn(activeTab === 'stock')}>📊 Stock Report</button>
+        <button onClick={() => handleTabChange('sales')} style={tabBtn(activeTab === 'sales')}>📈 Sales & Ledger</button>
+        <button onClick={() => handleTabChange('orders')} style={tabBtn(activeTab === 'orders')}>🛒 Orders</button>
+        <button onClick={() => handleTabChange('inventory')} style={tabBtn(activeTab === 'inventory')}>📦 Inventory</button>
+        <button onClick={() => handleTabChange('wallet')} style={tabBtn(activeTab === 'wallet')}>💳 Wallet</button>
+        <button onClick={() => handleTabChange('stock')} style={tabBtn(activeTab === 'stock')}>📊 Stock Report</button>
       </div>
 
       {/* TABS CONTENT */}
@@ -276,10 +356,22 @@ export default function ShopOwnerDashboard() {
         {activeTab === 'orders' && <OrdersTab targetOrderId={targetOrderId} setTargetOrderId={setTargetOrderId} orders={orders} setOrders={setOrders} products={products} currentShop={currentShop} fetchOrders={fetchOrders} fetchProducts={fetchProducts} />}
         
         {activeTab === 'inventory' && <InventoryTab products={products} fetchProducts={fetchProducts} currentShop={currentShop} />}
-        {activeTab === 'wallet' && <ShopWalletPassbook supabase={supabase} shopUser={currentShop} setAppStep={() => setActiveTab('sales')} />}
+        
+        {/* 🔥 WALLET PASSBOOK Jisme onGoToOrder function pass kiya gaya hai 🔥 */}
+        {activeTab === 'wallet' && (
+          <ShopWalletPassbook 
+            supabase={supabase} 
+            shopUser={currentShop} 
+            setAppStep={() => handleTabChange('sales')} 
+            onGoToOrder={(orderId: string) => {
+              setTargetOrderId(orderId);
+              handleTabChange('orders');
+            }}
+          />
+        )}
       </div>
 
-      {isProfileModalOpen && <ShopProfile currentShop={currentShop} setCurrentShop={setCurrentShop} onClose={() => setIsProfileModalOpen(false)} fetchAuthAndData={fetchAuthAndData} idCardUpi={idCardUpi} registrationUpi={registrationUpi} />}
+      {isProfileModalOpen && <ShopProfile currentShop={currentShop} setCurrentShop={setCurrentShop} onClose={() => setIsProfileModalOpen(false)} fetchAuthAndData={fetchAuthAndData} />}
 
       <AdminSupportTab currentShop={currentShop} openTrigger={openAdminChatTrigger} />
 
