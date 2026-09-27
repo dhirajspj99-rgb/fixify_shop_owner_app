@@ -75,6 +75,16 @@ function LoginContent() {
   const [loading, setLoading] = useState(false);
   const [newPassword, setNewPassword] = useState('');
 
+  // 🔥 NEW SECURITY: BROWSER BACK BUTTON LOCK AFTER LOGOUT 🔥
+  useEffect(() => {
+    window.history.pushState(null, '', window.location.href);
+    const handlePopState = () => {
+      window.history.pushState(null, '', window.location.href);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   useEffect(() => {
     if ((window as any).recaptchaVerifier) {
        (window as any).recaptchaVerifier.clear();
@@ -348,18 +358,41 @@ function LoginContent() {
       background: 'linear-gradient(135deg, #020617 0%, #0f172a 50%, #1e1b4b 100%)', fontFamily: '"Segoe UI", sans-serif'
     }}>
       
+      {/* 🔥 MULTIPLE FIXIFIY BACKGROUND WATERMARKS (REPEATING PATTERN) 🔥 */}
+      <div style={{ position: 'absolute', top: '-50%', left: '-50%', width: '200%', height: '200%', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignContent: 'center', zIndex: 0, pointerEvents: 'none', overflow: 'hidden', transform: 'rotate(-30deg)', gap: '40px' }}>
+        {Array.from({ length: 150 }).map((_, i) => (
+          <h1 key={i} style={{ fontSize: '40px', color: 'rgba(255, 255, 255, 0.04)', margin: 0, whiteSpace: 'nowrap', userSelect: 'none', fontWeight: '900', letterSpacing: '8px' }}>
+            FIXIFIY
+          </h1>
+        ))}
+      </div>
+
       <div id="recaptcha-container" style={{ position: 'absolute', top: 0, left: 0 }}></div>
 
-      <div style={{ position: 'absolute', top: '20px', right: '20px', display: 'flex', gap: '5px', zIndex: 20, background: 'rgba(255,255,255,0.1)', padding: '5px', borderRadius: '30px', backdropFilter: 'blur(5px)' }}>
-        <button onClick={() => setLang('EN')} style={{ background: lang === 'EN' ? '#38bdf8' : 'transparent', color: lang === 'EN' ? '#0f172a' : '#94a3b8', border: 'none', padding: '5px 12px', borderRadius: '20px', fontWeight: 'bold', cursor: 'pointer', fontSize: '12px' }}>EN</button>
-        <button onClick={() => setLang('HI')} style={{ background: lang === 'HI' ? '#38bdf8' : 'transparent', color: lang === 'HI' ? '#0f172a' : '#94a3b8', border: 'none', padding: '5px 12px', borderRadius: '20px', fontWeight: 'bold', cursor: 'pointer', fontSize: '12px' }}>हिंदी</button>
+      {/* 🔥 NEW & BIGGER BACK BUTTON (Redirects to Home '/') 🔥 */}
+      <button 
+        onClick={() => router.push('/')} 
+        style={{ 
+          position: 'absolute', top: '25px', left: '25px', display: 'flex', alignItems: 'center', gap: '8px', zIndex: 20, 
+          background: 'linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)', color: '#ffffff', border: '2px solid #991b1b', 
+          padding: '12px 25px', borderRadius: '10px', fontWeight: '900', cursor: 'pointer', fontSize: '16px', 
+          boxShadow: '0 4px 15px rgba(0,0,0,0.4)', textTransform: 'uppercase', letterSpacing: '1px'
+        }}
+      >
+        ⬅ {t('Home', 'होम')}
+      </button>
+
+      {/* LANGUAGE SWITCHER */}
+      <div style={{ position: 'absolute', top: '25px', right: '25px', display: 'flex', gap: '5px', zIndex: 20, background: 'rgba(255,255,255,0.1)', padding: '5px', borderRadius: '30px', backdropFilter: 'blur(5px)', boxShadow: '0 4px 10px rgba(0,0,0,0.2)' }}>
+        <button onClick={() => setLang('EN')} style={{ background: lang === 'EN' ? '#38bdf8' : 'transparent', color: lang === 'EN' ? '#0f172a' : '#94a3b8', border: 'none', padding: '8px 15px', borderRadius: '20px', fontWeight: 'bold', cursor: 'pointer', fontSize: '14px' }}>EN</button>
+        <button onClick={() => setLang('HI')} style={{ background: lang === 'HI' ? '#38bdf8' : 'transparent', color: lang === 'HI' ? '#0f172a' : '#94a3b8', border: 'none', padding: '8px 15px', borderRadius: '20px', fontWeight: 'bold', cursor: 'pointer', fontSize: '14px' }}>हिंदी</button>
       </div>
 
       <div style={{ 
         position: 'relative', zIndex: 10, width: '100%', maxWidth: '550px', 
-        backgroundColor: 'rgba(30, 41, 59, 0.7)', backdropFilter: 'blur(15px)', WebkitBackdropFilter: 'blur(15px)',
+        backgroundColor: 'rgba(30, 41, 59, 0.75)', backdropFilter: 'blur(15px)', WebkitBackdropFilter: 'blur(15px)',
         borderRadius: '20px', padding: '45px 35px', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', 
-        border: '1px solid rgba(255, 255, 255, 0.1)', boxSizing: 'border-box'
+        border: '1px solid rgba(255, 255, 255, 0.15)', boxSizing: 'border-box'
       }}>
         
         <div style={{ textAlign: 'center', marginBottom: '35px' }}>
@@ -381,14 +414,14 @@ function LoginContent() {
             {forgotStep === 1 && (
               <>
                 <p style={{ color: '#94a3b8', fontSize: '14px', marginBottom: '10px' }}>{t('Enter registered mobile number:', 'रजिस्टर किया हुआ मोबाइल नंबर डालें:')}</p>
-                <input type="tel" placeholder={t("10-Digit Mobile Number", "10-अंकीय मोबाइल नंबर")} value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} maxLength={10} style={inputStyle} />
+                <input type="tel" placeholder={t("10-Digit Mobile Number", "10-अंकीय मोबाइल नंबर")} value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleForgotSendOtp(); }} maxLength={10} style={inputStyle} />
                 <button onClick={handleForgotSendOtp} disabled={loading} style={buttonStyle}>{loading ? t("Sending...", "प्रोसेस हो रहा है...") : t("Send Reset OTP", "रीसेट OTP भेजें")}</button>
               </>
             )}
             {forgotStep === 2 && (
               <>
                 <p style={{ color: '#38bdf8', fontWeight: 'bold', fontSize: '14px', marginBottom: '10px', textAlign: 'center' }}>📲 {t('OTP has been sent', 'OTP भेज दिया गया है')}</p>
-                <input type="number" placeholder="XXXXXX" value={otp} onChange={(e) => setOtp(e.target.value.slice(0, 6))} style={{...inputStyle, fontSize: '28px', letterSpacing: '12px', textAlign: 'center', fontWeight: 'bold'}} />
+                <input type="number" placeholder="XXXXXX" value={otp} onChange={(e) => setOtp(e.target.value.slice(0, 6))} onKeyDown={(e) => { if (e.key === 'Enter') handleForgotVerifyOtp(); }} style={{...inputStyle, fontSize: '28px', letterSpacing: '12px', textAlign: 'center', fontWeight: 'bold'}} />
                 <button onClick={handleForgotVerifyOtp} disabled={loading} style={buttonStyle}>{loading ? t("Verifying...", "जांच हो रही है...") : t("Verify OTP", "OTP वेरीफाई करें")}</button>
               </>
             )}
@@ -396,7 +429,7 @@ function LoginContent() {
               <>
                 <p style={{ color: '#10b981', fontWeight: 'bold', fontSize: '14px', marginBottom: '10px', textAlign: 'center' }}>✅ {t('Verified! Create a new password', 'वेरीफाई हो गया! नया पासवर्ड बनाएं')}</p>
                 <div style={{ position: 'relative' }}>
-                  <input type={showNewPassword ? "text" : "password"} placeholder={t("New Password", "नया पासवर्ड")} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} maxLength={12} style={{...inputStyle, paddingRight: '50px'}} />
+                  <input type={showNewPassword ? "text" : "password"} placeholder={t("New Password", "नया पासवर्ड")} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleSetNewPassword(); }} maxLength={12} style={{...inputStyle, paddingRight: '50px'}} />
                   <button type="button" onClick={() => setShowNewPassword(!showNewPassword)} style={eyeBtnStyle}>{showNewPassword ? '🙈' : '👁️'}</button>
                 </div>
                 <button onClick={handleSetNewPassword} disabled={loading} style={{...buttonStyle, backgroundColor: '#10b981', color: 'white'}}>{loading ? t("Updating...", "सेव हो रहा है...") : t("Save New Password", "नया पासवर्ड सेव करें")}</button>
@@ -421,9 +454,24 @@ function LoginContent() {
 
             {isLogin && loginMethod === 'password' && (
                 <div>
-                    <input type="text" placeholder={t("Mobile Number or Email", "मोबाइल नंबर या ईमेल आईडी")} value={loginId} onChange={(e) => setLoginId(e.target.value)} style={inputStyle} />
+                    <input 
+                      type="text" 
+                      placeholder={t("Mobile Number or Email", "मोबाइल नंबर या ईमेल आईडी")} 
+                      value={loginId} 
+                      onChange={(e) => setLoginId(e.target.value)} 
+                      onKeyDown={(e) => { if (e.key === 'Enter') handlePasswordLogin(); }} 
+                      style={inputStyle} 
+                    />
                     <div style={{ position: 'relative' }}>
-                      <input type={showLoginPassword ? "text" : "password"} placeholder={t("Password", "पासवर्ड")} value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} maxLength={12} style={{...inputStyle, paddingRight: '50px'}} />
+                      <input 
+                        type={showLoginPassword ? "text" : "password"} 
+                        placeholder={t("Password", "पासवर्ड")} 
+                        value={loginPassword} 
+                        onChange={(e) => setLoginPassword(e.target.value)} 
+                        onKeyDown={(e) => { if (e.key === 'Enter') handlePasswordLogin(); }} 
+                        maxLength={12} 
+                        style={{...inputStyle, paddingRight: '50px'}} 
+                      />
                       <button type="button" onClick={() => setShowLoginPassword(!showLoginPassword)} style={eyeBtnStyle}>{showLoginPassword ? '🙈' : '👁️'}</button>
                     </div>
                     <div style={{ textAlign: 'right', marginBottom: '15px' }}>
@@ -435,7 +483,15 @@ function LoginContent() {
 
             {isLogin && loginMethod === 'otp' && (
                 <div>
-                    <input type="tel" placeholder={t("10-Digit Mobile Number", "10-अंकीय मोबाइल नंबर")} value={loginId} onChange={(e) => setLoginId(e.target.value)} maxLength={10} style={inputStyle} />
+                    <input 
+                      type="tel" 
+                      placeholder={t("10-Digit Mobile Number", "10-अंकीय मोबाइल नंबर")} 
+                      value={loginId} 
+                      onChange={(e) => setLoginId(e.target.value)} 
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleTriggerAuth(); }} 
+                      maxLength={10} 
+                      style={inputStyle} 
+                    />
                     <button onClick={handleTriggerAuth} disabled={loading} style={buttonStyle}>{loading ? t("Sending...", "भेजा जा रहा है...") : t("Send OTP & Login", "OTP भेजें और लॉगिन करें")}</button>
                 </div>
             )}
@@ -481,7 +537,7 @@ function LoginContent() {
                     </div>
 
                     <div style={{ position: 'relative', marginTop: '15px', marginBottom: '15px' }}>
-                      <input type={showSignupPassword ? "text" : "password"} placeholder={t("Create Strong Password", "मज़बूत पासवर्ड बनाएं")} value={signupPassword} onChange={(e) => setSignupPassword(e.target.value)} maxLength={12} style={{...inputStyle, paddingRight: '50px', margin: 0}} />
+                      <input type={showSignupPassword ? "text" : "password"} placeholder={t("Create Strong Password", "मज़बूत पासवर्ड बनाएं")} value={signupPassword} onChange={(e) => setSignupPassword(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleTriggerAuth(); }} maxLength={12} style={{...inputStyle, paddingRight: '50px', margin: 0}} />
                       <button type="button" onClick={() => setShowSignupPassword(!showSignupPassword)} style={eyeBtnStyle}>{showSignupPassword ? '🙈' : '👁️'}</button>
                       <div style={{ marginTop: '10px', padding: '12px', background: 'rgba(245, 158, 11, 0.1)', borderLeft: '3px solid #f59e0b', borderRadius: '6px' }}>
                         <p style={{ margin: 0, fontSize: '13px', color: '#cbd5e1', lineHeight: '1.4' }}>
@@ -509,6 +565,7 @@ function LoginContent() {
               placeholder="XXXXXX" 
               value={otp} 
               onChange={(e) => setOtp(e.target.value.slice(0, 6))} 
+              onKeyDown={(e) => { if (e.key === 'Enter') handleVerifyOtpAndProcess(); }} 
               style={{...inputStyle, fontSize: '28px', letterSpacing: '12px', textAlign: 'center', fontWeight: 'bold'}} 
             />
             
