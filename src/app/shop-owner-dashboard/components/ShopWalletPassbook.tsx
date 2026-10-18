@@ -1,7 +1,8 @@
 "use client";
 import React, { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabaseClient'; 
 
-export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onGoToOrder }: any) {
+export default function ShopWalletPassbook({ shopUser, setAppStep, onGoToOrder }: any) {
   // Balances State
   const [totalBalance, setTotalBalance] = useState<number>(0);
   const [withdrawableBalance, setWithdrawableBalance] = useState<number>(0);
@@ -24,6 +25,9 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
   const [timeframe, setTimeframe] = useState('all'); 
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
+  
+  // NEW: BUCKET FILTER STATE
+  const [activeBucket, setActiveBucket] = useState<'all' | 'available' | 'clearing' | 'pending'>('all');
 
   // Modals
   const [selectedTxnDetails, setSelectedTxnDetails] = useState<any>(null);
@@ -31,14 +35,15 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
   const [deletePassword, setDeletePassword] = useState('');
   const [txnToDelete, setTxnToDelete] = useState<any>(null);
 
-  // Dynamic Commission
+  // Dynamic Commission & Settings
   const [dynamicAdminCommission, setDynamicAdminCommission] = useState(0.05); 
   const [categoryRates, setCategoryRates] = useState<any>({});
+  const [selfDeliveryFee, setSelfDeliveryFee] = useState<number>(20);
 
   useEffect(() => {
     const fetchDatabaseCommission = async () => {
       try {
-        const { data } = await supabase.from('app_settings').select('commission_rate, category_commissions').eq('id', 1).maybeSingle();
+        const { data } = await supabase.from('app_settings').select('commission_rate, category_commissions, shop_self_delivery_fee').eq('id', 1).maybeSingle();
         if (data) {
           if (data.commission_rate !== undefined && data.commission_rate !== null) {
             let rate = Number(data.commission_rate);
@@ -47,8 +52,25 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
           }
           if (data.category_commissions) {
             let parsed = data.category_commissions;
-            if (typeof parsed === 'string') parsed = JSON.parse(parsed);
-            setCategoryRates(parsed);
+            if (typeof parsed === 'string') {
+              try { parsed = JSON.parse(parsed); } catch (e) {}
+            }
+            const normalizedRates: Record<string, number> = {};
+            if (Array.isArray(parsed)) {
+                parsed.forEach((item: any) => {
+                    const catName = String(item.category || item.name || '').trim().toLowerCase();
+                    const rateVal = Number(item.rate || item.commission || item.percentage || item.value || 0);
+                    if (catName) normalizedRates[catName] = rateVal;
+                });
+            } else if (typeof parsed === 'object' && parsed !== null) {
+                Object.keys(parsed).forEach(k => {
+                   normalizedRates[k.trim().toLowerCase()] = Number(parsed[k]);
+                });
+            }
+            setCategoryRates(normalizedRates);
+          }
+          if (data.shop_self_delivery_fee !== undefined) {
+             setSelfDeliveryFee(Number(data.shop_self_delivery_fee) || 20);
           }
         }
       } catch (e) {
@@ -56,7 +78,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
       }
     };
     fetchDatabaseCommission();
-  }, [supabase]);
+  }, []); // Supabase dependency removed to avoid errors
 
   useEffect(() => {
     if (shopUser?.id) {
@@ -77,6 +99,9 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
     const items = getProductDetailsArray(order);
     let calcItemTotal = 0;
     let calcAdminComm = 0;
+    
+    // Store detailed breakdown per item for history
+    const itemBreakdown: any[] = [];
 
     if (items.length > 0) {
       items.forEach((item: any) => {
@@ -90,18 +115,41 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
           const qty = Number(item.quantity || item.qty || 1);
           const lineTotal = Number(item.price || 0) * qty;
 
-          let rate = dynamicAdminCommission;
+          let rate = dynamicAdminCommission; // Default
+          let finalCatRate = 20; // safe fallback (Default 20%)
+          
           if (categoryRates && Object.keys(categoryRates).length > 0) {
-             const matchedKey = Object.keys(categoryRates).find(k => k.toLowerCase().trim() === c);
-             if (matchedKey && categoryRates[matchedKey] !== undefined) {
-               let catRate = Number(categoryRates[matchedKey]);
-               if (catRate > 1) catRate = catRate / 100;
-               rate = catRate;
+             if (categoryRates[c] !== undefined) {
+                 finalCatRate = categoryRates[c];
+             } else {
+                 const matchedKey = Object.keys(categoryRates).find(k => c.includes(k) || k.includes(c));
+                 if (matchedKey && categoryRates[matchedKey] !== undefined) {
+                     finalCatRate = categoryRates[matchedKey];
+                 } else if (categoryRates['default'] !== undefined) {
+                     finalCatRate = categoryRates['default'];
+                 } else if (categoryRates['other'] !== undefined) {
+                     finalCatRate = categoryRates['other'];
+                 } else if (categoryRates['general'] !== undefined) {
+                     finalCatRate = categoryRates['general'];
+                 }
              }
+             rate = finalCatRate / 100;
           }
 
+          const itemComm = lineTotal * rate;
           calcItemTotal += lineTotal;
-          calcAdminComm += (lineTotal * rate);
+          calcAdminComm += itemComm;
+          
+          itemBreakdown.push({
+             name: item.name || item.product_name,
+             category: item.category || 'General',
+             qty: qty,
+             unit_price: Number(item.price || 0),
+             line_total: lineTotal,
+             commission_rate: (rate * 100).toFixed(1),
+             commission_amt: itemComm,
+             net_earning: lineTotal - itemComm
+          });
         }
       });
     }
@@ -112,10 +160,37 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
     if (calcItemTotal === 0 && totalBill > 0) {
        calcItemTotal = Math.max(0, totalBill - deliveryCharge);
        calcAdminComm = calcItemTotal * dynamicAdminCommission;
+       
+       itemBreakdown.push({
+           name: 'Lump Sum Order',
+           category: 'N/A',
+           qty: 1,
+           line_total: calcItemTotal,
+           commission_rate: (dynamicAdminCommission * 100).toFixed(1),
+           commission_amt: calcAdminComm,
+           net_earning: calcItemTotal - calcAdminComm
+       });
     }
 
-    const netEarning = calcItemTotal - calcAdminComm; 
-    return { totalBill, deliveryCharge, itemTotal: calcItemTotal, adminComm: calcAdminComm, netEarning };
+    let isSelfDelivered = String(order.delivery_boy_id) === String(shopUser?.id) || String(order.delivery_boy_name).toLowerCase().includes('self');
+    let selfDelEarning = isSelfDelivered ? selfDeliveryFee : 0;
+    
+    const paymentMode = String(order.payment_mode || '').toUpperCase();
+    const isCod = paymentMode.includes('COD') || paymentMode.includes('CASH');
+    
+    let netEarning = calcItemTotal - calcAdminComm;
+    
+    return { 
+        totalBill, 
+        deliveryCharge, 
+        itemTotal: calcItemTotal, 
+        adminComm: calcAdminComm, 
+        netEarning, 
+        isSelfDelivered, 
+        selfDelEarning,
+        isCod,
+        itemBreakdown 
+    };
   };
 
   // 🔥 MAIN WALLET ENGINE 🔥
@@ -123,7 +198,6 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
     try {
       setIsLoading(true);
 
-      // Yahan filter nahi laga rahe taki crash na ho agar column exist na kare
       const { data: ordersData } = await supabase.from('orders').select('*').eq('shop_id', shopUser.id);
       const { data: walletData } = await supabase.from('wallet_transactions').select('*').eq('shop_id', shopUser.id);
 
@@ -145,29 +219,44 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
         const calc = calculateFinances(o);
         const orderTime = new Date(o.created_at).getTime();
         const isSevenDaysOld = (now - orderTime) >= SEVEN_DAYS_MS;
-
-        // Balance calculate karna (Bina hide kiye)
-        if (clearedStatuses.includes(status)) {
-          if (isSevenDaysOld) availableAmt += calc.netEarning;
-          else clearingAmt += calc.netEarning;
-        } else if (pendingStatuses.includes(status)) {
-          pendingAmt += calc.netEarning;
+        
+        let walletImpactAmt = calc.netEarning;
+        if (calc.isSelfDelivered) {
+            if (calc.isCod) {
+                // If COD Self Delivery, shop collected cash. Only Comm is deducted.
+                walletImpactAmt = -Math.abs(calc.adminComm); 
+            } else {
+                // Prepaid Self Delivery
+                walletImpactAmt = calc.netEarning + calc.selfDelEarning;
+            }
         }
 
-        // Ledger List mein dalna (Sirf unhe jo delete/hide nahi kiye gaye)
+        // Balance calculate karna
+        if (clearedStatuses.includes(status)) {
+          if (isSevenDaysOld) availableAmt += walletImpactAmt;
+          else clearingAmt += walletImpactAmt;
+        } else if (pendingStatuses.includes(status)) {
+          pendingAmt += walletImpactAmt;
+        }
+
+        // Ledger List mein dalna 
         if (!o.wallet_hidden) {
           if (clearedStatuses.includes(status)) {
             unifiedLedger.push({
-              id: 'order_' + o.id, real_id: o.id, type: 'credit', amount: calc.netEarning,
-              admin_fee_deducted: calc.adminComm, reason: `Order Earnings #${o.order_no || o.id}`,
-              created_at: o.created_at, status: isSevenDaysOld ? 'cleared' : 'clearing', raw_data: o,
+              id: 'order_' + o.id, real_id: o.id, type: walletImpactAmt >= 0 ? 'credit' : 'debit', amount: Math.abs(walletImpactAmt),
+              admin_fee_deducted: calc.adminComm, reason: `Order Settlement #${o.order_no || o.id}`,
+              created_at: o.created_at, status: isSevenDaysOld ? 'cleared' : 'clearing', 
+              raw_data: o, calc_details: calc,
+              bucket: isSevenDaysOld ? 'available' : 'clearing',
               search_key: `${o.order_no || ''} ${o.id}`.toLowerCase()
             });
           } else if (pendingStatuses.includes(status)) {
             unifiedLedger.push({
-              id: 'order_' + o.id, real_id: o.id, type: 'credit', amount: calc.netEarning,
+              id: 'order_' + o.id, real_id: o.id, type: walletImpactAmt >= 0 ? 'credit' : 'debit', amount: Math.abs(walletImpactAmt),
               admin_fee_deducted: calc.adminComm, reason: `Order Processing #${o.order_no || o.id}`,
-              created_at: o.created_at, status: 'pending_delivery', raw_data: o,
+              created_at: o.created_at, status: 'pending_delivery', 
+              raw_data: o, calc_details: calc,
+              bucket: 'pending',
               search_key: `${o.order_no || ''} ${o.id}`.toLowerCase()
             });
           }
@@ -181,23 +270,28 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
           tokenNo = `FIX-${String(w.id).slice(-4).padStart(4, '0')}`;
         }
 
-        if (w.type === 'debit' && (w.status === 'completed' || w.status === 'pending')) {
+        // Withdrawals
+        if (w.type === 'debit' && (w.status === 'completed' || w.status === 'pending') && w.reason?.toLowerCase().includes('withdraw')) {
            totalDebits += Number(w.amount);
         }
 
         if (!w.wallet_hidden) {
-          unifiedLedger.push({
-            id: 'txn_' + w.id, real_id: w.id, type: w.type, amount: Number(w.amount),
-            reason: w.reason || 'Withdrawal Request', created_at: w.created_at, status: w.status,
-            token_no: tokenNo, raw_data: w,
-            search_key: `${tokenNo} ${w.utr_no || ''} ${w.reason || ''}`.toLowerCase()
-          });
+          // Extra generic manual transactions (if any)
+          if (!String(w.reason).toLowerCase().includes('order #')) {
+              unifiedLedger.push({
+                id: 'txn_' + w.id, real_id: w.id, type: w.type, amount: Number(w.amount),
+                reason: w.reason || 'Wallet Transaction', created_at: w.created_at, status: w.status,
+                token_no: tokenNo, raw_data: w, calc_details: null,
+                bucket: w.type === 'debit' ? 'available' : 'clearing', 
+                search_key: `${tokenNo} ${w.utr_no || ''} ${w.reason || ''}`.toLowerCase()
+              });
+          }
         }
       });
 
       // Final Math Sort
       unifiedLedger.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      availableAmt -= totalDebits; // Withdrawals sirf main balance se katenge
+      availableAmt -= totalDebits; 
 
       const totalAll = Math.max(0, availableAmt + clearingAmt + pendingAmt);
       setTotalBalance(totalAll);
@@ -206,7 +300,6 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
       setPendingClearance(Math.max(0, pendingAmt));
       setTransactions(unifiedLedger);
 
-      // Safe DB Update
       await supabase.from('shops').update({ balance: Math.max(0, availableAmt + clearingAmt) }).eq('id', shopUser.id);
 
     } catch (e: any) {
@@ -216,7 +309,6 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
     }
   };
 
-  // 🔥 DELETE HISTORY SECURELY WITH PIN 🔥
   const confirmDeleteTransaction = async () => {
     if (!deletePassword) return alert("Kripya apna Shop Password daalein.");
     if (deletePassword !== shopUser.password) {
@@ -240,7 +332,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
         }
       }
 
-      alert("✅ Record successfully cleared from Wallet screen!\n(Aapka balance wahi rahega, sirf history chhupegi)");
+      alert("✅ Record successfully cleared from Wallet screen!");
       setDeleteModalOpen(false);
       setSelectedTxnDetails(null);
       fetchShopWalletData(); 
@@ -278,14 +370,21 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
     }
   };
 
-  // 🔥 ADVANCED FILTERING (Date to Date) 🔥
+  // 🔥 ADVANCED FILTERING WITH BUCKET (CLICK) LOGIC 🔥
   const filteredTransactions = transactions.filter((txn: any) => {
+    // 1. Check Bucket Filter
+    if (activeBucket !== 'all') {
+      if (txn.bucket !== activeBucket) return false;
+    }
+
+    // 2. Check Search Query
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase().trim();
       const matchesSearch = txn.search_key.includes(query) || txn.reason.toLowerCase().includes(query) || String(txn.amount).includes(query);
       if (!matchesSearch) return false;
     }
 
+    // 3. Check Date Filter
     const d = new Date(txn.created_at);
     d.setHours(0,0,0,0);
     const today = new Date(); 
@@ -308,6 +407,110 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
     return true;
   });
 
+  // ==========================================
+  // 📥 EXCEL & PDF EXPORT FUNCTIONS (ONLY EXPORTS FILTERED LIST)
+  // ==========================================
+  const downloadExcelReport = () => {
+    if (filteredTransactions.length === 0) return alert("Download karne ke liye koi data nahi hai!");
+    
+    let bucketName = activeBucket === 'all' ? 'All_Earnings' : activeBucket === 'available' ? 'Main_Balance' : activeBucket === 'clearing' ? 'Hold_Balance' : 'Pending_Transit';
+    let csv = "Date,Transaction ID/Token,Type,Amount (Rs),Status,Reason,Details/Breakdown\n";
+    
+    filteredTransactions.forEach((txn: any) => {
+      const dateStr = new Date(txn.created_at).toLocaleString('en-IN').replace(/,/g, '');
+      const txnId = txn.token_no || txn.id;
+      const typeStr = txn.type.toUpperCase();
+      const amtStr = txn.amount.toFixed(2);
+      const statusStr = txn.status.toUpperCase();
+      const reasonStr = `"${txn.reason.replace(/"/g, '""')}"`;
+      
+      let breakdownStr = "";
+      if (txn.calc_details?.itemBreakdown) {
+          breakdownStr = txn.calc_details.itemBreakdown.map((i:any) => `${i.name} (x${i.qty})`).join(' | ');
+      }
+      breakdownStr = `"${breakdownStr.replace(/"/g, '""')}"`;
+
+      csv += `${dateStr},${txnId},${typeStr},${amtStr},${statusStr},${reasonStr},${breakdownStr}\n`;
+    });
+
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Wallet_Report_${shopUser?.name || 'Shop'}_${bucketName}_${timeframe}.csv`);
+    document.body.appendChild(link); 
+    link.click(); 
+    document.body.removeChild(link);
+  };
+
+  const downloadPdfReport = () => {
+    if (filteredTransactions.length === 0) return alert("Download karne ke liye koi data nahi hai!");
+    
+    const printWin = window.open('', '_blank', 'width=900,height=800');
+    if (!printWin) return window.print();
+
+    let bucketNameDisplay = activeBucket === 'all' ? 'Total Gross Earnings' : activeBucket === 'available' ? 'Available Main Balance' : activeBucket === 'clearing' ? 'Hold (Clearing) Balance' : 'Pending (In-Transit) Balance';
+
+    const rowsHtml = filteredTransactions.map((txn: any, i: number) => {
+      const dateStr = new Date(txn.created_at).toLocaleString('en-IN');
+      const isCredit = txn.type === 'credit';
+      const color = isCredit ? '#15803d' : '#b91c1c';
+      const sign = isCredit ? '+' : '-';
+      
+      return `
+        <tr>
+          <td>${i + 1}</td>
+          <td>${dateStr}</td>
+          <td>${txn.token_no || txn.id.split('_')[1]}</td>
+          <td>${txn.reason}</td>
+          <td style="color:${color};font-weight:bold;">${sign} ₹${txn.amount.toFixed(2)}</td>
+          <td>${txn.status.toUpperCase()}</td>
+        </tr>
+      `;
+    }).join('');
+
+    printWin.document.write(`
+      <html>
+        <head>
+          <title>Wallet Report - ${shopUser?.name || 'Shop'}</title>
+          <style>
+            body { font-family: 'Segoe UI', sans-serif; padding: 20px; color: #111; }
+            h2 { text-align: center; margin-bottom: 5px; }
+            p { text-align: center; color: #555; font-size: 13px; margin-top: 0; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; }
+            th, td { border: 1px solid #ccc; padding: 8px 10px; text-align: left; }
+            th { background: #f8fafc; color: #334155; }
+            .summary { display: flex; justify-content: space-between; margin-top: 20px; padding: 15px; background: #f1f5f9; border-radius: 8px; font-weight: bold; }
+          </style>
+        </head>
+        <body>
+          <h2>🏪 ${shopUser?.name || 'Shop Owner'} - Wallet Transaction Report</h2>
+          <p>Bucket: ${bucketNameDisplay} | Filter: ${timeframe.toUpperCase()} | Generated On: ${new Date().toLocaleString('en-IN')}</p>
+          
+          <div class="summary">
+             <div>Total Transactions: ${filteredTransactions.length}</div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>S.No</th>
+                <th>Date & Time</th>
+                <th>Transaction ID</th>
+                <th>Reason / Details</th>
+                <th>Amount</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+          <script>window.onload = function() { setTimeout(window.print, 500); }</script>
+        </body>
+      </html>
+    `);
+    printWin.document.close();
+  };
+
   return (
     <div style={{ maxWidth: '800px', margin: '0 auto', background: '#f8fafc', minHeight: '100vh', fontFamily: 'Inter, sans-serif', padding: '20px' }}>
       
@@ -318,16 +521,19 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
 
       <div style={{ background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)', borderRadius: '16px', padding: '25px 20px', color: 'white', marginBottom: '25px', boxShadow: '0 10px 25px rgba(15, 23, 42, 0.3)', border: '1px solid #334155' }}>
         
-        {/* MAIN WALLET SECTION */}
-        <div style={{ marginBottom: '20px', paddingBottom: '20px', borderBottom: '1px dashed #475569' }}>
-          <p style={{ margin: '0 0 5px 0', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '1px', color: '#cbd5e1' }}>Available Main Balance</p>
+        {/* MAIN WALLET SECTION (CLICKABLE) */}
+        <div 
+           onClick={() => setActiveBucket('available')}
+           style={{ marginBottom: '20px', paddingBottom: '20px', borderBottom: '1px dashed #475569', cursor: 'pointer', opacity: activeBucket === 'all' || activeBucket === 'available' ? 1 : 0.4, transition: '0.3s' }}
+        >
+          <p style={{ margin: '0 0 5px 0', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '1px', color: '#cbd5e1' }}>Available Main Balance {activeBucket === 'available' && '✅'}</p>
           <h1 style={{ margin: 0, fontSize: '42px', fontWeight: '900', color: '#10b981' }}>
             ₹{withdrawableBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </h1>
-          <p style={{ margin: '5px 0 0 0', fontSize: '12px', color: '#64748b' }}>* Delivered orders older than 1 week.</p>
+          <p style={{ margin: '5px 0 0 0', fontSize: '12px', color: '#64748b' }}>Delivered orders older than 1 week.</p>
           
           <button 
-            onClick={() => setShowWithdraw(true)}
+            onClick={(e) => { e.stopPropagation(); setShowWithdraw(true); }}
             style={{ marginTop: '15px', background: withdrawableBalance > 0 ? '#10b981' : '#475569', color: 'white', border: 'none', padding: '12px 20px', borderRadius: '8px', fontWeight: 'bold', fontSize: '14px', cursor: withdrawableBalance > 0 ? 'pointer' : 'not-allowed', width: '100%', maxWidth: '300px' }}
             disabled={withdrawableBalance <= 0}
           >
@@ -335,27 +541,35 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
           </button>
         </div>
 
-        {/* 3-BUCKET BREAKDOWN */}
+        {/* 3-BUCKET BREAKDOWN (ALL CLICKABLE) */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '15px' }}>
           
-          <div style={{ background: 'rgba(255,255,255,0.05)', padding: '15px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)' }}>
+          <div 
+            onClick={() => setActiveBucket('clearing')}
+            style={{ background: activeBucket === 'clearing' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(255,255,255,0.05)', padding: '15px', borderRadius: '12px', border: activeBucket === 'clearing' ? '1px solid #f59e0b' : '1px solid rgba(255,255,255,0.1)', cursor: 'pointer', transition: '0.3s', opacity: activeBucket === 'all' || activeBucket === 'clearing' ? 1 : 0.4 }}
+          >
             <p style={{ margin: '0 0 2px 0', fontSize: '11px', color: '#f59e0b' }}>Clearing (Hold)</p>
             <h3 style={{ margin: 0, fontSize: '18px', color: '#fcd34d' }}>₹{clearingBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h3>
             <span style={{fontSize: '10px', color: '#64748b'}}>Delivered &lt; 7 Days</span>
           </div>
 
-          <div style={{ background: 'rgba(59, 130, 246, 0.1)', padding: '15px', borderRadius: '12px', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
+          <div 
+            onClick={() => setActiveBucket('pending')}
+            style={{ background: activeBucket === 'pending' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(59, 130, 246, 0.1)', padding: '15px', borderRadius: '12px', border: activeBucket === 'pending' ? '1px solid #3b82f6' : '1px solid rgba(59, 130, 246, 0.2)', cursor: 'pointer', transition: '0.3s', opacity: activeBucket === 'all' || activeBucket === 'pending' ? 1 : 0.4 }}
+          >
             <p style={{ margin: '0 0 2px 0', fontSize: '11px', color: '#93c5fd' }}>Pending (In-Transit)</p>
             <h3 style={{ margin: 0, fontSize: '18px', color: '#bfdbfe' }}>₹{pendingClearance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h3>
             <span style={{fontSize: '10px', color: '#64748b'}}>Accepted Orders</span>
           </div>
 
-          <div style={{ background: 'rgba(255,255,255,0.05)', padding: '15px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)' }}>
+          <div 
+            onClick={() => setActiveBucket('all')}
+            style={{ background: activeBucket === 'all' ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255,255,255,0.05)', padding: '15px', borderRadius: '12px', border: activeBucket === 'all' ? '1px solid #cbd5e1' : '1px solid rgba(255,255,255,0.1)', cursor: 'pointer', transition: '0.3s', opacity: activeBucket === 'all' ? 1 : 0.6 }}
+          >
             <p style={{ margin: '0 0 2px 0', fontSize: '11px', color: '#cbd5e1' }}>Total Gross Earning</p>
             <h3 style={{ margin: 0, fontSize: '18px', color: '#f8fafc' }}>₹{totalBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h3>
-            <span style={{fontSize: '10px', color: '#64748b'}}>Sum of all buckets</span>
+            <span style={{fontSize: '10px', color: '#64748b'}}>View All Transactions</span>
           </div>
-
         </div>
       </div>
 
@@ -369,7 +583,14 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
           style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #cbd5e1', marginBottom: '15px', outline: 'none', boxSizing: 'border-box' }}
         />
         
-        <strong style={{ color: '#0f172a', fontSize: '14px', display: 'block', marginBottom: '10px' }}>📅 Filter by Date:</strong>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '10px' }}>
+          <strong style={{ color: '#0f172a', fontSize: '14px' }}>📅 Filter by Date:</strong>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button onClick={downloadExcelReport} style={{ background: '#16a34a', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}>📥 Excel</button>
+            <button onClick={downloadPdfReport} style={{ background: '#dc2626', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}>📄 PDF</button>
+          </div>
+        </div>
+
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           <button onClick={() => setTimeframe('all')} style={filterBtnStyle(timeframe === 'all')}>All</button>
           <button onClick={() => setTimeframe('today')} style={filterBtnStyle(timeframe === 'today')}>Today</button>
@@ -388,7 +609,9 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
       </div>
 
       <div onClick={() => setIsHistoryOpen(!isHistoryOpen)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px', cursor: 'pointer', userSelect: 'none' }}>
-        <h3 style={{ margin: 0, fontSize: '18px', color: '#0f172a' }}>📜 Ledger History ({filteredTransactions.length})</h3>
+        <h3 style={{ margin: 0, fontSize: '18px', color: '#0f172a' }}>
+          📜 {activeBucket === 'all' ? 'Ledger History' : activeBucket === 'available' ? 'Available Balance Ledger' : activeBucket === 'clearing' ? 'Hold Balance Ledger' : 'Pending In-Transit Ledger'} ({filteredTransactions.length})
+        </h3>
         <span style={{ fontSize: '14px', color: '#0284c7', fontWeight: 'bold' }}>{isHistoryOpen ? '▲ Hide' : '▼ View'}</span>
       </div>
 
@@ -397,7 +620,7 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
           {isLoading ? (
             <p style={{ textAlign: 'center', color: '#64748b' }}>Loading history...</p>
           ) : filteredTransactions.length === 0 ? (
-            <p style={{ textAlign: 'center', color: '#64748b', padding: '20px' }}>Koi transaction nahi mila.</p>
+            <p style={{ textAlign: 'center', color: '#64748b', padding: '20px' }}>Is filter mein koi transaction nahi mila.</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {filteredTransactions.slice(0, visibleCount).map((txn: any) => {
@@ -452,36 +675,81 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
         </div>
       )}
 
-      {/* TRANSACTION DETAILS MODAL */}
+      {/* 🔥 ENHANCED TRANSACTION DETAILS MODAL 🔥 */}
       {selectedTxnDetails && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(15, 23, 42, 0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 99999, padding: '15px' }}>
           <div style={{ background: 'white', width: '100%', maxWidth: '500px', borderRadius: '16px', padding: '25px', maxHeight: '90vh', overflowY: 'auto', boxSizing: 'border-box' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid #e2e8f0', paddingBottom: '10px' }}>
-              <h3 style={{ margin: 0, fontSize: '18px', color: '#0f172a' }}>📋 Details</h3>
+              <h3 style={{ margin: 0, fontSize: '18px', color: '#0f172a' }}>📋 Transaction Details</h3>
               <button onClick={() => setSelectedTxnDetails(null)} style={{ background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '30px', height: '30px', fontSize: '16px', cursor: 'pointer', color: '#64748b' }}>✕</button>
             </div>
 
-            {selectedTxnDetails.type === 'credit' ? (
+            {selectedTxnDetails.id.startsWith('order_') && selectedTxnDetails.calc_details ? (
               <div>
-                <div style={{ background: '#f8fafc', padding: '15px', borderRadius: '10px', marginBottom: '15px', border: '1px solid #e2e8f0' }}>
-                  <p style={{ margin: '0 0 5px 0', fontSize: '12px', color: '#64748b' }}>Order ID / Number</p>
-                  <h4 style={{ margin: 0, color: '#0284c7' }}>#{selectedTxnDetails.raw_data.order_no || selectedTxnDetails.raw_data.id}</h4>
+                <div style={{ background: '#f8fafc', padding: '15px', borderRadius: '10px', marginBottom: '15px', border: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between' }}>
+                  <div>
+                     <p style={{ margin: '0 0 5px 0', fontSize: '12px', color: '#64748b' }}>Order ID</p>
+                     <h4 style={{ margin: 0, color: '#0284c7' }}>#{selectedTxnDetails.raw_data.order_no || selectedTxnDetails.raw_data.id}</h4>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                     <p style={{ margin: '0 0 5px 0', fontSize: '12px', color: '#64748b' }}>Payment Mode</p>
+                     <h4 style={{ margin: 0, color: '#1e293b' }}>{selectedTxnDetails.raw_data.payment_mode || 'Cash'}</h4>
+                  </div>
                 </div>
 
+                {/* PRODUCT WISE BREAKDOWN TABLE */}
+                <h4 style={{ fontSize: '14px', color: '#334155', marginBottom: '10px' }}>🛒 Items Sold & Commission:</h4>
+                <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', overflow: 'hidden', marginBottom: '15px' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                    <thead style={{ background: '#f1f5f9' }}>
+                      <tr>
+                        <th style={{ padding: '8px', textAlign: 'left', borderBottom: '1px solid #e2e8f0' }}>Item</th>
+                        <th style={{ padding: '8px', textAlign: 'center', borderBottom: '1px solid #e2e8f0' }}>Total</th>
+                        <th style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #e2e8f0' }}>Comm.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedTxnDetails.calc_details.itemBreakdown.map((item: any, idx: number) => (
+                        <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                          <td style={{ padding: '8px', color: '#1e293b' }}>
+                            <strong>{item.name}</strong> <br/>
+                            <span style={{ fontSize: '10px', color: '#64748b' }}>{item.qty} x ₹{item.unit_price} ({item.commission_rate}%)</span>
+                          </td>
+                          <td style={{ padding: '8px', textAlign: 'center', fontWeight: 'bold' }}>₹{item.line_total}</td>
+                          <td style={{ padding: '8px', textAlign: 'right', color: '#ef4444' }}>-₹{item.commission_amt.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* SELF DELIVERY INFO */}
+                {selectedTxnDetails.calc_details.isSelfDelivered && (
+                   <div style={{ background: '#ecfdf5', padding: '12px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #10b981', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                     <div>
+                       <strong style={{ color: '#065f46', fontSize: '13px' }}>🙋‍♂️ Self Delivery Earning</strong>
+                       <p style={{ margin: '2px 0 0 0', fontSize: '11px', color: '#047857' }}>Shop ne khud deliver kiya.</p>
+                     </div>
+                     <strong style={{ color: '#10b981', fontSize: '15px' }}>+₹{selectedTxnDetails.calc_details.selfDelEarning}</strong>
+                   </div>
+                )}
+
+                {/* NET SUMMARY */}
                 <div style={{ background: '#f8fafc', padding: '15px', borderRadius: '10px', marginBottom: '15px', border: '1px solid #e2e8f0' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', margin: '4px 0' }}>
-                    <span>Total Bill:</span><strong>₹{selectedTxnDetails.raw_data.total_amount}</strong>
+                    <span>Total Product Value:</span><strong>₹{selectedTxnDetails.calc_details.itemTotal}</strong>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', margin: '4px 0', color: '#ef4444' }}>
-                    <span>Commission Deducted:</span><strong>- ₹{(selectedTxnDetails.admin_fee_deducted || 0).toFixed(2)}</strong>
+                    <span>Admin Commission Deducted:</span><strong>-₹{(selectedTxnDetails.calc_details.adminComm || 0).toFixed(2)}</strong>
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', margin: '8px 0 0 0', paddingTop: '8px', borderTop: '1px dashed #cbd5e1', color: selectedTxnDetails.status === 'pending_delivery' ? '#3b82f6' : (selectedTxnDetails.status === 'clearing' ? '#f59e0b' : '#10b981') }}>
-                    <strong>
-                      {selectedTxnDetails.status === 'pending_delivery' ? 'Transit Earnings:' : 
-                       selectedTxnDetails.status === 'clearing' ? 'Hold Earnings:' : 'Credited Earnings:'}
-                    </strong>
-                    <strong>+ ₹{selectedTxnDetails.amount.toFixed(2)}</strong>
+                  
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '15px', margin: '8px 0 0 0', paddingTop: '8px', borderTop: '1px dashed #cbd5e1', color: selectedTxnDetails.type === 'debit' ? '#ef4444' : '#10b981' }}>
+                    <strong>Net Wallet Impact ({selectedTxnDetails.type === 'debit' ? 'Debit' : 'Credit'}):</strong>
+                    <strong>{selectedTxnDetails.type === 'debit' ? '-' : '+'} ₹{selectedTxnDetails.amount.toFixed(2)}</strong>
                   </div>
+                  <p style={{ margin: '8px 0 0 0', fontSize: '11px', color: '#64748b', textAlign: 'center' }}>
+                    *If COD Self Delivery, Earning was collected in Cash. Only Admin Comm is deducted from Wallet.
+                  </p>
                 </div>
                 
                 {onGoToOrder && (
@@ -496,13 +764,18 @@ export default function ShopWalletPassbook({ supabase, shopUser, setAppStep, onG
             ) : (
               <div>
                 <div style={{ background: '#fef2f2', padding: '15px', borderRadius: '10px', marginBottom: '15px', border: '1px solid #fecaca' }}>
-                  <p style={{ margin: '0 0 5px 0', fontSize: '12px', color: '#991b1b' }}>Token ID</p>
-                  <h4 style={{ margin: 0, color: '#b91c1c' }}>🎫 {selectedTxnDetails.token_no}</h4>
+                  <p style={{ margin: '0 0 5px 0', fontSize: '12px', color: '#991b1b' }}>Transaction Token / ID</p>
+                  <h4 style={{ margin: 0, color: '#b91c1c' }}>🎫 {selectedTxnDetails.token_no || selectedTxnDetails.id}</h4>
                 </div>
                 <div style={{ background: '#f8fafc', padding: '15px', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '15px' }}>
                   <p style={{ margin: '0 0 2px 0', fontSize: '11px', color: '#64748b' }}>Amount & Status</p>
-                  <strong style={{ fontSize: '16px', color: '#ef4444' }}>₹{selectedTxnDetails.amount.toFixed(2)}</strong>
+                  <strong style={{ fontSize: '20px', color: selectedTxnDetails.type === 'credit' ? '#10b981' : '#ef4444' }}>
+                    {selectedTxnDetails.type === 'credit' ? '+' : '-'} ₹{selectedTxnDetails.amount.toFixed(2)}
+                  </strong>
                   <span style={{ float: 'right', fontWeight: 'bold', color: selectedTxnDetails.status === 'completed' ? '#10b981' : '#f59e0b' }}>{selectedTxnDetails.status.toUpperCase()}</span>
+                  <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px dashed #cbd5e1', fontSize: '13px', color: '#334155' }}>
+                    <strong>Reason:</strong> {selectedTxnDetails.reason}
+                  </div>
                 </div>
               </div>
             )}

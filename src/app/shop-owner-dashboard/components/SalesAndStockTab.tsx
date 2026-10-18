@@ -9,9 +9,14 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
   
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
   
-  // Stock Room States
+  // ==========================================
+  // 📦 STOCK ROOM STATES & DATE FILTERS
+  // ==========================================
   const [stockSearchTerm, setStockSearchTerm] = useState('');
   const [stockCategory, setStockCategory] = useState('All Categories');
+  const [stockTimeframe, setStockTimeframe] = useState<'all' | 'today' | 'week' | 'month' | 'custom'>('all');
+  const [stockStartDate, setStockStartDate] = useState('');
+  const [stockEndDate, setStockEndDate] = useState('');
   const [viewPhoto, setViewPhoto] = useState<string | null>(null);
 
   const [editingProduct, setEditingProduct] = useState<any>(null);
@@ -30,7 +35,7 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
   useEffect(() => {
     const fetchDatabaseCommission = async () => {
       try {
-        const { data, error } = await supabase.from('app_settings').select('commission_rate, category_commissions').eq('id', 1).maybeSingle();
+        const { data } = await supabase.from('app_settings').select('commission_rate, category_commissions').eq('id', 1).maybeSingle();
         if (data) {
           if (data.commission_rate !== undefined && data.commission_rate !== null) {
             let rate = Number(data.commission_rate);
@@ -264,18 +269,213 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
     }
   };
 
+  // ==========================================================
+  // 📦 STOCK ROOM: CATEGORY + DATE-TO-DATE FILTER & EXPORT LOGIC
+  // ==========================================================
   const uniqueStockCategories = ['All Categories', ...Array.from(new Set(shopProducts.map((p: any) => p.category).filter(Boolean)))];
 
-  const displayedStock = shopProducts.filter((p: any) => {
-    const matchesName = !stockSearchTerm || (p?.name || '').toLowerCase().includes(stockSearchTerm.toLowerCase());
-    const matchesCategory = stockCategory === 'All Categories' || p.category === stockCategory;
-    return matchesName && matchesCategory;
-  }).sort((a: any, b: any) => {
-    const aIsLow = Number(a.total_stock) <= 5 ? 1 : 0;
-    const bIsLow = Number(b.total_stock) <= 5 ? 1 : 0;
-    if (aIsLow !== bIsLow) return bIsLow - aIsLow; 
-    return 0; 
+  // Calculate how many units of each product were sold in the selected Stock Timeframe
+  const soldQtyInStockTimeframe: Record<string, number> = {};
+  completedShopOrders.forEach((o: any) => {
+    const d = new Date(o.created_at);
+    d.setHours(0, 0, 0, 0);
+    let passOrderDate = true;
+    if (stockTimeframe === 'today') passOrderDate = d.toDateString() === todayDateString;
+    else if (stockTimeframe === 'week') passOrderDate = d >= startOfWeek;
+    else if (stockTimeframe === 'month') passOrderDate = d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+    else if (stockTimeframe === 'custom' && stockStartDate && stockEndDate) {
+      const s = new Date(stockStartDate); s.setHours(0, 0, 0, 0);
+      const e = new Date(stockEndDate); e.setHours(23, 59, 59, 999);
+      passOrderDate = d >= s && d <= e;
+    }
+
+    if (passOrderDate) {
+      const items = getProductDetailsArray(o);
+      items.forEach((it: any) => {
+        const pKey = String(it.id || it.name || it.product_name || '').toLowerCase().trim();
+        const q = Number(it.quantity || it.qty || 1);
+        if (pKey) soldQtyInStockTimeframe[pKey] = (soldQtyInStockTimeframe[pKey] || 0) + q;
+        const nameKey = String(it.name || it.product_name || '').toLowerCase().trim();
+        if (nameKey && nameKey !== pKey) soldQtyInStockTimeframe[nameKey] = (soldQtyInStockTimeframe[nameKey] || 0) + q;
+      });
+    }
   });
+
+  const getProductPeriodSold = (p: any) => {
+    if (stockTimeframe === 'all') return Number(p.sold_quantity || 0);
+    const byId = soldQtyInStockTimeframe[String(p.id).toLowerCase()];
+    const byName = soldQtyInStockTimeframe[String(p.name || '').toLowerCase().trim()];
+    return byId ?? byName ?? Number(p.sold_quantity || 0);
+  };
+
+  const displayedStock = shopProducts
+    .filter((p: any) => {
+      const matchesName = !stockSearchTerm || (p?.name || '').toLowerCase().includes(stockSearchTerm.toLowerCase());
+      const matchesCategory = stockCategory === 'All Categories' || p.category === stockCategory;
+
+      // Date filter for Stock (Checks product created_at / updated_at if available, or if sold in period)
+      let matchesDate = true;
+      const rawDate = p.updated_at || p.created_at;
+      if (stockTimeframe !== 'all' && rawDate) {
+        const pd = new Date(rawDate);
+        pd.setHours(0, 0, 0, 0);
+        if (stockTimeframe === 'today') matchesDate = pd.toDateString() === todayDateString || getProductPeriodSold(p) > 0;
+        else if (stockTimeframe === 'week') matchesDate = pd >= startOfWeek || getProductPeriodSold(p) > 0;
+        else if (stockTimeframe === 'month') matchesDate = (pd.getMonth() === currentMonth && pd.getFullYear() === currentYear) || getProductPeriodSold(p) > 0;
+        else if (stockTimeframe === 'custom' && stockStartDate && stockEndDate) {
+          const s = new Date(stockStartDate); s.setHours(0, 0, 0, 0);
+          const e = new Date(stockEndDate); e.setHours(23, 59, 59, 999);
+          matchesDate = (pd >= s && pd <= e) || getProductPeriodSold(p) > 0;
+        }
+      }
+
+      return matchesName && matchesCategory && matchesDate;
+    })
+    .sort((a: any, b: any) => {
+      const aIsLow = Number(a.total_stock) <= 5 ? 1 : 0;
+      const bIsLow = Number(b.total_stock) <= 5 ? 1 : 0;
+      if (aIsLow !== bIsLow) return bIsLow - aIsLow; 
+      return 0; 
+    });
+
+  // Live Stock Room Summary Metrics
+  const totalStockProductsCount = displayedStock.length;
+  const totalStockUnitsLeft = displayedStock.reduce((sum: number, p: any) => sum + Number(p.total_stock || 0), 0);
+  const totalStockValueAmount = displayedStock.reduce((sum: number, p: any) => sum + (Number(p.price || 0) * Number(p.total_stock || 0)), 0);
+  const lowStockCount = displayedStock.filter((p: any) => Number(p.total_stock || 0) <= 5).length;
+
+  const getStockFilterLabel = () => {
+    if (stockTimeframe === 'today') return 'Aaj (Today)';
+    if (stockTimeframe === 'week') return '1 Week (Is Hafte)';
+    if (stockTimeframe === 'month') return '1 Month (Is Mahine)';
+    if (stockTimeframe === 'custom') return `Date: ${stockStartDate || 'Start'} to ${stockEndDate || 'End'}`;
+    return 'All Time Stock';
+  };
+
+  // 📊 DOWNLOAD STOCK REPORT IN EXCEL (.CSV)
+  const exportStockToExcel = () => {
+    if (displayedStock.length === 0) return alert("Download karne ke liye is filter mein koi stock product nahi hai.");
+
+    const rows: string[] = [];
+    rows.push(`"${currentShop?.name || 'Shop'} - Stock Inventory Report"`);
+    rows.push(`"Category Filter","${stockCategory}","Timeframe","${getStockFilterLabel()}","Generated On","${new Date().toLocaleString('en-IN')}"`);
+    rows.push(`"Total Products","${totalStockProductsCount}","Total Stock Left (Units)","${totalStockUnitsLeft}","Total Stock Value (Rs)","Rs ${totalStockValueAmount}","Low Stock Items","${lowStockCount}"`);
+    rows.push('');
+    rows.push('"S.No","Product ID","Product Name","Category","Unit Price (Rs)","Stock Left","Unit","Total Stock Value (Rs)","Sold Quantity","Payment Mode","Stock Status","Last Updated / Created Date"');
+
+    displayedStock.forEach((p: any, idx: number) => {
+      const stockQty = Number(p.total_stock || 0);
+      const priceVal = Number(p.price || 0);
+      const stockValue = stockQty * priceVal;
+      const soldQty = getProductPeriodSold(p);
+      const statusText = stockQty === 0 ? 'OUT OF STOCK (0)' : stockQty <= 5 ? 'LOW STOCK ALERT' : 'IN STOCK';
+      const dateStr = p.updated_at || p.created_at ? new Date(p.updated_at || p.created_at).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN');
+
+      rows.push([
+        idx + 1,
+        `"${p.id}"`,
+        `"${String(p.name || '').replace(/"/g, '""')}"`,
+        `"${String(p.category || 'General')}"`,
+        priceVal,
+        stockQty,
+        `"${p.unit || 'Pc'}"`,
+        stockValue,
+        soldQty,
+        `"${p.is_cod_available !== false ? 'COD Available' : 'Online Only'}"`,
+        `"${statusText}"`,
+        `"${dateStr}"`
+      ].join(','));
+    });
+
+    const csvString = '\uFEFF' + rows.join('\n');
+    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Stock_Report_${stockCategory.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // 📄 DOWNLOAD STOCK REPORT IN PDF (PRINTABLE REPORT)
+  const exportStockToPDF = () => {
+    if (displayedStock.length === 0) return alert("Download karne ke liye is filter mein koi stock product nahi hai.");
+    const printWin = window.open('', '_blank');
+    if (!printWin) return alert("Popup blocker is active.");
+
+    let rowsHtml = '';
+    displayedStock.forEach((p: any, idx: number) => {
+      const stockQty = Number(p.total_stock || 0);
+      const priceVal = Number(p.price || 0);
+      const stockVal = stockQty * priceVal;
+      const soldQty = getProductPeriodSold(p);
+      const isLow = stockQty <= 5;
+
+      rowsHtml += `
+        <tr style="background-color: ${isLow ? '#fef2f2' : '#ffffff'};">
+          <td>${idx + 1}</td>
+          <td><strong>${p.name}</strong></td>
+          <td>${p.category || 'General'}</td>
+          <td style="text-align:right;">₹${priceVal.toLocaleString('en-IN')}</td>
+          <td style="text-align:center;font-weight:bold;color:${isLow ? '#dc2626' : '#15803d'};">${stockQty} ${p.unit || 'Pc'}</td>
+          <td style="text-align:right;font-weight:bold;">₹${stockVal.toLocaleString('en-IN')}</td>
+          <td style="text-align:center;">${soldQty} ${p.unit || 'Pc'}</td>
+          <td style="text-align:center;">${p.is_cod_available !== false ? 'COD' : 'Online Only'}</td>
+          <td style="text-align:center;font-weight:bold;color:${isLow ? '#dc2626' : '#15803d'};">${stockQty === 0 ? 'OUT OF STOCK' : isLow ? 'LOW STOCK' : 'IN STOCK'}</td>
+        </tr>
+      `;
+    });
+
+    const html = `
+      <html>
+        <head>
+          <title>Stock Inventory Report - ${currentShop?.name || 'Shop'}</title>
+          <style>
+            body { font-family: 'Segoe UI', sans-serif; padding: 20px; color: #0f172a; }
+            h2, p { margin: 4px 0; }
+            .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+            .s-card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 12px; background: #f8fafc; }
+            table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 12.5px; }
+            th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: left; }
+            th { background-color: #1e293b; color: #ffffff; }
+          </style>
+        </head>
+        <body>
+          <h2>📦 Stock Inventory Report — ${currentShop?.name || 'Shop'}</h2>
+          <p><strong>Category:</strong> ${stockCategory} | <strong>Period:</strong> ${getStockFilterLabel()} | <strong>Date:</strong> ${new Date().toLocaleString('en-IN')}</p>
+          
+          <div class="summary-cards">
+            <div class="s-card"><strong>Total Products</strong><h3>${totalStockProductsCount} Items</h3></div>
+            <div class="s-card"><strong>Total Stock Left</strong><h3>${totalStockUnitsLeft} Units</h3></div>
+            <div class="s-card"><strong>Total Stock Value</strong><h3>₹${totalStockValueAmount.toLocaleString('en-IN')}</h3></div>
+            <div class="s-card"><strong>Low / Out of Stock</strong><h3 style="color:#dc2626;">${lowStockCount} Items</h3></div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Product Name</th>
+                <th>Category</th>
+                <th style="text-align:right;">Rate (₹)</th>
+                <th style="text-align:center;">Stock Left</th>
+                <th style="text-align:right;">Stock Value (₹)</th>
+                <th style="text-align:center;">Sold Qty</th>
+                <th style="text-align:center;">Pay Mode</th>
+                <th style="text-align:center;">Status</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </body>
+      </html>
+    `;
+
+    printWin.document.write(html);
+    printWin.document.close();
+    printWin.onload = () => printWin.print();
+  };
 
   return (
     <div>
@@ -338,7 +538,7 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
           <div style={{ background: 'linear-gradient(90deg, #022c22, #064e3b)', padding: '25px', borderRadius: '16px', border: '1px solid #10b981', marginBottom: '30px', boxShadow: '0 4px 15px rgba(16, 185, 129, 0.2)' }}>
               <h3 style={{ margin: '0 0 15px 0', color: '#34d399', display: 'flex', alignItems: 'center', gap: '10px' }}>💰 Filtered Payout Summary (Excluding Delivery)</h3>
               <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px', marginBottom: '12px' }}><span style={{ color: '#cbd5e1', fontSize: '16px' }}>Total Item Sales (Minus Delivery):</span><strong style={{ color: '#f8fafc', fontSize: '20px' }}>₹ {filteredGrossItems.toLocaleString()}</strong></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px', marginBottom: '12px' }}><span style={{ color: '#fca5a5', fontSize: '16px' }}>Admin Commission Deducted:</span><strong style={{ color: '#f87171', fontSize: '20px' }}>- ₹ {filteredFee.toLocaleString()}</strong></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px', marginBottom: '12px' }}><span style={{ color: '#fca5a5', fontSize: '16px' }}>Admin Commission Deducted:</span><strong style={{ color: '#f87171', fontSize: '20px' }}>₹ {filteredFee.toLocaleString()}</strong></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span style={{ color: '#6ee7b7', fontWeight: 'bold', fontSize: '18px' }}>Your Net Bank Earning:</span><strong style={{ color: '#10b981', fontSize: '28px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>₹ {filteredNet.toLocaleString()}</strong></div>
           </div>
 
@@ -400,16 +600,138 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
         </div>
       )}
 
-      {/* 📦 STOCK TAB */}
+      {/* ========================================================== */}
+      {/* 📦 STOCK TAB (WITH CATEGORY SELECT, DATE FILTER & EXPORT)  */}
+      {/* ========================================================== */}
       {activeTab === 'stock' && (
           <div style={{ animation: 'fadeIn 0.5s ease-in-out' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', flexWrap: 'wrap', gap: '15px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '15px' }}>
                   <h2 style={{color: '#38bdf8', margin: 0, display: 'flex', alignItems: 'center', gap: '10px'}}>
-                    <span style={{ fontSize: '28px' }}>📦</span> Stock Room Report
+                    <span style={{ fontSize: '28px' }}>📦</span> Stock Room & Inventory Report
                   </h2>
-                  <input type="text" placeholder="🔍 Search product..." value={stockSearchTerm} onChange={(e) => setStockSearchTerm(e.target.value)} style={{ ...inputStyle, width: '300px', margin: '0' }} />
+                  <input
+                    type="text"
+                    placeholder="🔍 Search product in stock..."
+                    value={stockSearchTerm}
+                    onChange={(e) => setStockSearchTerm(e.target.value)}
+                    style={{ ...inputStyle, width: '300px', margin: '0', border: '1px solid #38bdf8' }}
+                  />
               </div>
 
+              {/* 📊 4 STOCK SUMMARY CARDS */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '20px' }}>
+                <div style={{ background: 'linear-gradient(135deg, #1e3a8a, #1d4ed8)', padding: '18px', borderRadius: '14px', boxShadow: '0 8px 15px rgba(0,0,0,0.25)' }}>
+                  <p style={{ margin: 0, color: '#bfdbfe', fontSize: '12.5px', fontWeight: 'bold', textTransform: 'uppercase' }}>कुल प्रोडक्ट्स (Products)</p>
+                  <h2 style={{ margin: '8px 0 2px 0', color: '#fff', fontSize: '26px' }}>{totalStockProductsCount} Items</h2>
+                  <span style={{ fontSize: '11.5px', color: '#dbeafe' }}>Category: {stockCategory}</span>
+                </div>
+
+                <div style={{ background: 'linear-gradient(135deg, #064e3b, #047857)', padding: '18px', borderRadius: '14px', boxShadow: '0 8px 15px rgba(0,0,0,0.25)' }}>
+                  <p style={{ margin: 0, color: '#a7f3d0', fontSize: '12.5px', fontWeight: 'bold', textTransform: 'uppercase' }}>कुल बचा हुआ स्टॉक (Units)</p>
+                  <h2 style={{ margin: '8px 0 2px 0', color: '#fff', fontSize: '26px' }}>{totalStockUnitsLeft.toLocaleString('en-IN')} Units</h2>
+                  <span style={{ fontSize: '11.5px', color: '#d1fae5' }}>Available in Stock Room</span>
+                </div>
+
+                <div style={{ background: 'linear-gradient(135deg, #4c1d95, #6d28d9)', padding: '18px', borderRadius: '14px', boxShadow: '0 8px 15px rgba(0,0,0,0.25)' }}>
+                  <p style={{ margin: 0, color: '#ddd6fe', fontSize: '12.5px', fontWeight: 'bold', textTransform: 'uppercase' }}>कुल स्टॉक वैल्यू (Valuation)</p>
+                  <h2 style={{ margin: '8px 0 2px 0', color: '#fff', fontSize: '26px' }}>₹ {totalStockValueAmount.toLocaleString('en-IN')}</h2>
+                  <span style={{ fontSize: '11.5px', color: '#ede9fe' }}>Total Stock Worth</span>
+                </div>
+
+                <div style={{ background: 'linear-gradient(135deg, #7f1d1d, #b91c1c)', padding: '18px', borderRadius: '14px', boxShadow: '0 8px 15px rgba(0,0,0,0.25)' }}>
+                  <p style={{ margin: 0, color: '#fecaca', fontSize: '12.5px', fontWeight: 'bold', textTransform: 'uppercase' }}>Low / Out of Stock</p>
+                  <h2 style={{ margin: '8px 0 2px 0', color: '#fff', fontSize: '26px' }}>{lowStockCount} Items</h2>
+                  <span style={{ fontSize: '11.5px', color: '#fee2e2' }}>5 या उससे कम स्टॉक वाले आइटम</span>
+                </div>
+              </div>
+
+              {/* 🛠️ STOCK FILTER PANEL: CATEGORY SELECT + TODAY/WEEK/MONTH/DATE-TO-DATE + PDF/EXCEL DOWNLOAD */}
+              <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '16px', border: '1px solid #334155', marginBottom: '20px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '20px', alignItems: 'flex-start' }}>
+                  
+                  {/* Left: Category Dropdown & Date Filter Buttons */}
+                  <div style={{ flex: '1 1 480px' }}>
+                    <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '16px' }}>
+                      <div style={{ minWidth: '250px', flex: 1 }}>
+                        <label style={{ color: '#fbbf24', fontSize: '12.5px', fontWeight: 'bold', display: 'block', marginBottom: '6px' }}>
+                          📂 कैटेगरी के अनुसार स्टॉक चुनें (Select Category):
+                        </label>
+                        <select
+                          value={stockCategory}
+                          onChange={(e) => setStockCategory(e.target.value)}
+                          style={{
+                            ...inputStyle,
+                            border: '2px solid #38bdf8',
+                            backgroundColor: '#0f172a',
+                            color: '#4ade80',
+                            fontWeight: 'bold',
+                            fontSize: '14px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          {uniqueStockCategories.map((cat) => {
+                            const count = cat === 'All Categories'
+                              ? shopProducts.length
+                              : shopProducts.filter((p: any) => p.category === cat).length;
+                            return (
+                              <option key={cat as string} value={cat as string}>
+                                {cat === 'All Categories' ? `🌈 All Categories (${count} Products)` : `📦 ${cat} (${count} Products)`}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+                    </div>
+
+                    <strong style={{ color: '#e2e8f0', display: 'block', marginBottom: '10px', fontSize: '14px' }}>
+                      📅 स्टॉक रिपोर्ट की तारीख चुनें (Filter Stock By Timeframe):
+                    </strong>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button onClick={() => setStockTimeframe('all')} style={filterBtnStyle(stockTimeframe === 'all')}>
+                        📋 पूरा स्टॉक (All Stock)
+                      </button>
+                      <button onClick={() => setStockTimeframe('today')} style={filterBtnStyle(stockTimeframe === 'today')}>
+                        आज का स्टॉक (Today)
+                      </button>
+                      <button onClick={() => setStockTimeframe('week')} style={filterBtnStyle(stockTimeframe === 'week')}>
+                        1 सप्ताह (1 Week)
+                      </button>
+                      <button onClick={() => setStockTimeframe('month')} style={filterBtnStyle(stockTimeframe === 'month')}>
+                        1 महीना (1 Month)
+                      </button>
+                      <button onClick={() => setStockTimeframe('custom')} style={filterBtnStyle(stockTimeframe === 'custom', true)}>
+                        📅 Date-to-Date चुनें
+                      </button>
+                    </div>
+
+                    {stockTimeframe === 'custom' && (
+                      <div style={{ display: 'flex', gap: '15px', marginTop: '14px', alignItems: 'center', flexWrap: 'wrap', backgroundColor: '#0f172a', padding: '12px', borderRadius: '8px', border: '1px solid #f59e0b' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          <label style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '4px' }}>शुरुआती तारीख (Start Date)</label>
+                          <input type="date" value={stockStartDate} onChange={e => setStockStartDate(e.target.value)} style={inputStyle} />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          <label style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '4px' }}>अंतिम तारीख (End Date)</label>
+                          <input type="date" value={stockEndDate} onChange={e => setStockEndDate(e.target.value)} style={inputStyle} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right: Stock PDF & Excel Download Buttons */}
+                  <div style={{ borderLeft: '2px dashed #334155', paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '10px', justifyContent: 'center', minWidth: '210px' }}>
+                    <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 'bold' }}>📥 स्टॉक रिपोर्ट डाउनलोड करें:</span>
+                    <button onClick={exportStockToPDF} style={{ ...actionBtnStyle, backgroundColor: '#ef4444', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                      📄 Download Stock PDF
+                    </button>
+                    <button onClick={exportStockToExcel} style={{ ...actionBtnStyle, backgroundColor: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                      📊 Download Stock Excel
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* HORIZONTAL QUICK CATEGORY PILLS */}
               <div className="hide-scrollbar" style={{ display: 'flex', gap: '10px', overflowX: 'auto', paddingBottom: '15px', marginBottom: '10px' }}>
                 {uniqueStockCategories.map((cat) => (
                   <button key={cat as string} onClick={() => setStockCategory(cat as string)} style={{
@@ -483,11 +805,14 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
               <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                 {displayedStock.length === 0 ? (
                   <div style={{ color: '#94a3b8', textAlign: 'center', padding: '40px 20px', backgroundColor: '#1e293b', borderRadius: '12px', border: '1px dashed #334155' }}>
-                    <h3 style={{ margin: '0 0 10px 0', color: '#cbd5e1' }}>Is category mein koi product nahi hai.</h3>
+                    <h3 style={{ margin: '0 0 10px 0', color: '#cbd5e1' }}>Is category ya date range mein koi product nahi hai.</h3>
                   </div>
                 ) : (
                   displayedStock.map((p: any) => {
                       const isLowStock = Number(p.total_stock) <= 5;
+                      const periodSold = getProductPeriodSold(p);
+                      const stockValuation = Number(p.price || 0) * Number(p.total_stock || 0);
+
                       return (
                       <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', backgroundColor: isLowStock ? 'rgba(239, 68, 68, 0.05)' : '#1e293b', border: `1px solid ${isLowStock ? '#ef4444' : '#334155'}`, borderRadius: '16px', flexWrap: 'wrap', gap: '15px', position: 'relative' }}>
                           {isLowStock && (
@@ -524,7 +849,9 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
                                 </button>
                               </div>
 
-                              <div style={{color: '#4ade80', fontWeight: 'bold', marginTop: '8px', fontSize: '15px'}}>Price: ₹{p.price}</div>
+                              <div style={{color: '#4ade80', fontWeight: 'bold', marginTop: '8px', fontSize: '15px'}}>
+                                Rate: ₹{p.price} <span style={{ color: '#94a3b8', fontSize: '12.5px', fontWeight: 'normal' }}>| Stock Value: <strong style={{ color: '#fbbf24' }}>₹{stockValuation.toLocaleString('en-IN')}</strong></span>
+                              </div>
                             </div>
                           </div>
                           
@@ -533,7 +860,7 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
                           </div>
                           
                           <div style={{ flex: '1 1 120px', textAlign: 'center', padding: '12px', borderRadius: '8px', backgroundColor: 'rgba(59, 130, 246, 0.1)', border: '1px solid #3b82f6', color: '#93c5fd', fontWeight: 'bold' }}>
-                            Total Sold: <br/><span style={{fontSize: '20px'}}>{p.sold_quantity || 0} {p.unit || 'Pc'}</span>
+                            {stockTimeframe === 'all' ? 'Total Sold:' : 'Sold in Period:'} <br/><span style={{fontSize: '20px'}}>{periodSold} {p.unit || 'Pc'}</span>
                           </div>
                           
                           <div style={{ display: 'flex', gap: '10px' }}>
@@ -598,9 +925,9 @@ export default function SalesAndStockTab({ activeTab, orders, currentShop, produ
                 return (
                   <>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#94a3b8' }}><span>Gross Bill Amount:</span><strong>₹{calc.totalBill.toFixed(2)}</strong></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#f87171' }}><span>Delivery Charge Deducted:</span><strong>- ₹{calc.deliveryCharge.toFixed(2)}</strong></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#f87171' }}><span>Delivery Charge Deducted:</span><strong>₹{calc.deliveryCharge.toFixed(2)}</strong></div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#a7f3d0' }}><span>Total Item Amount:</span><strong>₹{calc.itemTotal.toFixed(2)}</strong></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', color: '#fca5a5', borderBottom: '1px solid rgba(255,255,255,0.2)', paddingBottom: '12px' }}><span>Admin Comm. Deducted:</span><strong>- ₹{calc.adminComm.toFixed(2)}</strong></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', color: '#fca5a5', borderBottom: '1px solid rgba(255,255,255,0.2)', paddingBottom: '12px' }}><span>Admin Comm. Deducted:</span><strong>₹{calc.adminComm.toFixed(2)}</strong></div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#fff' }}><span style={{ fontSize: '16px', fontWeight: 'bold' }}>Your Net Payout:</span><strong style={{ fontSize: '24px', color: '#10b981', background: '#fff', padding: '4px 10px', borderRadius: '6px' }}>₹{calc.netEarning.toFixed(2)}</strong></div>
                   </>
                 );

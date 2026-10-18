@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient'; 
 import { useRouter } from 'next/navigation'; 
 import OrdersTab from './components/OrdersTab';
@@ -8,43 +8,67 @@ import SalesAndStockTab from './components/SalesAndStockTab';
 import ShopWalletPassbook from './components/ShopWalletPassbook';
 import ShopProfile from './components/ShopProfile';
 import AdminSupportTab from './components/AdminSupportTab';
+import CounterBillingTab from './components/CounterBillingTab';
+
+// 📡 NIGRANI (ADMIN MONITORING) LIVE ACTIVITY LOGGER
+const logNigraniActivity = async (shop: any, actionType: string, description: string, extraMeta?: any) => {
+  if (!shop?.id) return;
+  try {
+    await supabase.from('user_activities').insert({
+      user_id: String(shop.id),
+      user_name: shop.name || 'Shop Owner',
+      user_phone: shop.phone || '',
+      user_role: 'shop_owner',
+      action: actionType,
+      description: description,
+      metadata: extraMeta ? JSON.stringify(extraMeta) : null,
+      created_at: new Date().toISOString()
+    });
+  } catch (e) {
+    console.warn("Nigrani logging failed:", e);
+  }
+};
 
 export default function ShopOwnerDashboard() {
   const router = useRouter();  
   const [activeTab, setActiveTab] = useState('sales');
-  const activeTabRef = useRef(activeTab); // 🔥 Back Button tracking
+  const activeTabRef = useRef(activeTab);
   
   const [currentShop, setCurrentShop] = useState<any>(null); 
+  const currentShopIdRef = useRef<any>(null);
+  const isInitialLoadedRef = useRef(false);
+
   const [products, setProducts] = useState<any[]>([]); 
   const [orders, setOrders] = useState<any[]>([]); 
+  const [isLoadingData, setIsLoadingData] = useState(true);
   
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false); 
   const isProfileModalOpenRef = useRef(isProfileModalOpen); 
   
   const [notices, setNotices] = useState<any[]>([]);
 
-  // ==========================================
-  // 🔥 SOUND & NOTIFICATION STATES 🔥
-  // ==========================================
+  // 🔔 SOUND & NOTIFICATION STATES
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifMenu, setShowNotifMenu] = useState(false);
-  const [targetOrderId, setTargetOrderId] = useState<string | null>(null);
+  
+  // 🎯 USED FOR ROUTING TO SPECIFIC ORDER FROM WALLET OR NOTIFICATIONS
+  const [targetOrderId, setTargetOrderId] = useState<any>(null);
+  
   const [openAdminChatTrigger, setOpenAdminChatTrigger] = useState(0);
 
-  // Sync refs for back button logic
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
   useEffect(() => { isProfileModalOpenRef.current = isProfileModalOpen; }, [isProfileModalOpen]);
+  useEffect(() => { currentShopIdRef.current = currentShop?.id; }, [currentShop?.id]);
 
-  // 🔔 Sound Play Function
-  const playAlertSound = () => {
+  const playAlertSound = useCallback(() => {
     try {
       const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-      audio.play().catch(e => console.log("Auto-play blocked by browser."));
+      audio.play().catch(() => {});
     } catch(e) {}
-  };
+  }, []);
 
   // ==========================================
-  // 🔥 SMART BACK BUTTON (PopState Logic) 🔥
+  // 🔥 SMART BACK BUTTON (PopState Logic)
   // ==========================================
   useEffect(() => {
     window.history.pushState(null, '', window.location.href);
@@ -69,194 +93,285 @@ export default function ShopOwnerDashboard() {
     
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentShop]); // Added currentShop dependency to ensure handleLogout has access to the latest shop state
+
+  // ==========================================
+  // ⚡ FAST & SAFE FETCH FUNCTIONS
+  // ==========================================
+  const fetchNotices = useCallback(async () => {
+    try {
+      const { data } = await supabase.from('notices').select('*').eq('is_active', true).order('created_at', { ascending: false }).limit(5);
+      if (data) setNotices(data);
+    } catch {}
   }, []);
 
+  const fetchProducts = useCallback(async (forceRefresh = false, shopIdParam?: any) => {
+    const sid = shopIdParam ?? currentShopIdRef.current;
+    try {
+      let query = supabase.from('products').select('*').order('id', { ascending: false }).limit(500);
+      if (sid) {
+        query = query.eq('shop_id', sid);
+      }
+      const { data, error } = await query;
+      if (!error && data && data.length > 0) {
+        setProducts(data);
+      } else if (sid) {
+        const { data: allData } = await supabase.from('products').select('*').limit(400);
+        if (allData) {
+          const shopProds = allData.filter(p => !p.shop_id || String(p.shop_id) === String(sid));
+          setProducts(shopProds.length > 0 ? shopProds : allData);
+        }
+      }
+    } catch (e) {
+      console.warn("Products fetch error:", e);
+    }
+  }, []);
+
+  const fetchOrders = useCallback(async (shopIdToFetch?: string | number, forceRefresh = false) => {
+    const sid = shopIdToFetch !== undefined ? shopIdToFetch : currentShopIdRef.current;
+    if (!sid) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('shop_id', String(sid))
+        .order('created_at', { ascending: false })
+        .limit(300);
+
+      let rawOrders = data || [];
+
+      if (rawOrders.length === 0 && !error) {
+        const { data: fallbackData } = await supabase
+          .from('orders')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(250);
+        if (fallbackData) {
+          rawOrders = fallbackData.filter(o => String(o.shop_id || '').trim() === String(sid).trim());
+        }
+      }
+
+      const finalOrders = rawOrders
+        .filter(o => !String(o.type || '').trim().toLowerCase().includes('labour'))
+        .map(order => {
+          let parsedMsgs = order.messages;
+          if (typeof parsedMsgs === 'string') {
+            try { parsedMsgs = JSON.parse(parsedMsgs); } catch { parsedMsgs = []; }
+          }
+          if (!Array.isArray(parsedMsgs)) parsedMsgs = [];
+          return {
+            ...order,
+            messages: parsedMsgs,
+            is_payment_verified: order.is_payment_verified ?? false
+          };
+        });
+
+      setOrders(finalOrders);
+    } catch (e) {
+      console.warn("Orders fetch error:", e);
+    }
+  }, []);
+
+  const fetchAuthAndData = useCallback(async () => {
+    setIsLoadingData(true);
+    try {
+      let phoneNo = '';
+      const savedShopData = localStorage.getItem('fixifiy_shop');
+      if (savedShopData) {
+        try {
+          const parsed = JSON.parse(savedShopData);
+          phoneNo = parsed.phone;
+          if (parsed?.id && !currentShopIdRef.current) {
+            setCurrentShop(parsed);
+            currentShopIdRef.current = parsed.id;
+          }
+        } catch(e) {}
+      }
+
+      if (!phoneNo) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          let sessionPhone = session.user.email?.replace('@fixifiy.in', '').replace(/[^0-9]/g, '');
+          if (sessionPhone && sessionPhone.startsWith('91') && sessionPhone.length === 12) {
+            sessionPhone = sessionPhone.substring(2);
+          }
+          phoneNo = sessionPhone || '';
+        }
+      }
+
+      if (!phoneNo) {
+        router.push('/login');
+        return;
+      }
+
+      const { data: shopData } = await supabase.from('shops').select('*').eq('phone', phoneNo).maybeSingle();
+      if (shopData) {
+        setCurrentShop(shopData);
+        currentShopIdRef.current = shopData.id;
+        try { localStorage.setItem('fixifiy_shop', JSON.stringify(shopData)); } catch {}
+        await Promise.all([
+          fetchProducts(true, shopData.id),
+          fetchOrders(shopData.id, true),
+          fetchNotices()
+        ]);
+      } else {
+        router.push('/login');
+      }
+    } catch (e) {
+      console.warn("Auth error:", e);
+    } finally {
+      setIsLoadingData(false);
+    }
+  }, [fetchNotices, fetchOrders, fetchProducts, router]);
+
   // ==========================================
-  // 🔥 AUTO DATA CACHING (24 Hours) 🔥
+  // 🔥 RUN INITIAL LOAD ONLY ONCE
   // ==========================================
   useEffect(() => {
-    if (orders.length > 0 && currentShop?.id) {
-      localStorage.setItem(`fixifiy_orders_${currentShop.id}`, JSON.stringify(orders));
-      localStorage.setItem(`fixifiy_orders_time_${currentShop.id}`, Date.now().toString());
+    if (!isInitialLoadedRef.current) {
+      isInitialLoadedRef.current = true;
+      fetchAuthAndData();
     }
-  }, [orders, currentShop?.id]);
+  }, [fetchAuthAndData]);
 
+  // ==========================================
+  // 📡 REALTIME SUBSCRIPTION
+  // ==========================================
   useEffect(() => {
-    if (products.length > 0) {
-      localStorage.setItem('fixifiy_products', JSON.stringify(products));
-      localStorage.setItem('fixifiy_products_time', Date.now().toString());
-    }
-  }, [products]);
+    if (!currentShop?.id) return;
+    const myShopIdStr = String(currentShop.id);
 
+    const ordersSubscription = supabase
+      .channel(`realtime-shop-orders-${myShopIdStr}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders' },
+        (payload) => {
+          if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
+            const updatedOrder: any = payload.new;
+            if (!updatedOrder) return;
 
-  // ==========================================
-  // 🔥 INITIAL LOAD & REAL-TIME LISTENER 🔥
-  // ==========================================
-  useEffect(() => { 
-    fetchAuthAndData(); 
-    
-    const ordersSubscription = supabase.channel('realtime-shop-orders').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => { 
-        if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
-            const updatedOrder = payload.new;
-
-            // Strict Labour Filter
-            const orderTypeStr = String(updatedOrder.type || '').toLowerCase();
-            if (orderTypeStr.includes('labour')) return; 
-            if (currentShop?.id && String(updatedOrder.shop_id) !== String(currentShop.id)) return; 
+            if (String(updatedOrder.shop_id) !== myShopIdStr) return;
+            if (String(updatedOrder.type || '').toLowerCase().includes('labour')) return;
 
             let parsedMsgs = updatedOrder.messages;
-            if (typeof parsedMsgs === 'string') { try { parsedMsgs = JSON.parse(parsedMsgs); } catch(e) { parsedMsgs = []; } }
+            if (typeof parsedMsgs === 'string') {
+              try { parsedMsgs = JSON.parse(parsedMsgs); } catch { parsedMsgs = []; }
+            }
             if (!Array.isArray(parsedMsgs)) parsedMsgs = [];
             updatedOrder.messages = parsedMsgs;
 
             setOrders(prevOrders => {
-                const exists = prevOrders.find(o => o.id === updatedOrder.id);
-                
-                if (payload.eventType === 'INSERT' && !exists) {
+              const exists = prevOrders.find(o => o.id === updatedOrder.id);
+
+              if (payload.eventType === 'INSERT' && !exists) {
+                playAlertSound();
+                setNotifications(prev => [{
+                  id: Date.now(),
+                  title: '📦 New Order Received!',
+                  desc: `Order #${updatedOrder.order_no || updatedOrder.id} - ₹${updatedOrder.total_amount}`,
+                  type: 'order',
+                  refId: updatedOrder.id,
+                  isRead: false
+                }, ...prev.slice(0, 29)]);
+              }
+
+              if (payload.eventType === 'UPDATE' && exists) {
+                const oldMsgs = exists.messages || [];
+                if (parsedMsgs.length > oldMsgs.length) {
+                  const lastMsg = parsedMsgs[parsedMsgs.length - 1];
+                  if (lastMsg?.sender === 'customer') {
                     playAlertSound();
-                    setNotifications(prev => [{ id: Date.now(), title: '📦 New Order Received!', desc: `Order #${updatedOrder.order_no || updatedOrder.id} - ₹${updatedOrder.total_amount}`, type: 'order', refId: updatedOrder.id, isRead: false }, ...prev]);
-                }
-                
-                if (payload.eventType === 'UPDATE' && exists) {
-                    const oldMsgs = exists.messages || [];
-                    if (parsedMsgs.length > oldMsgs.length) {
-                        const lastMsg = parsedMsgs[parsedMsgs.length - 1];
-                        if (lastMsg.sender === 'customer') {
-                            playAlertSound();
-                            setNotifications(prev => [{ id: Date.now(), title: '💬 New Customer Message', desc: `Order #${updatedOrder.order_no || updatedOrder.id}: ${lastMsg.text.substring(0,20)}...`, type: 'order_chat', refId: updatedOrder.id, isRead: false }, ...prev]);
-                        }
-                    }
-                }
+                    setNotifications(prev => [{
+                      id: Date.now(),
+                      title: '💬 New Customer Message',
+                      desc: `Order #${updatedOrder.order_no || updatedOrder.id}: ${(lastMsg.text || '').substring(0, 28)}...`,
+                      type: 'order_chat',
+                      refId: updatedOrder.id,
+                      isRead: false
+                    }, ...prev.slice(0, 29)]);
+                  } else if (lastMsg?.sender === 'delivery_boy') {
+                    playAlertSound();
+                    let notifTitle = '🛵 Delivery Partner Update';
+                    if (lastMsg.type === 'picked_up') notifTitle = '🏬 दुकान से माल पिकअप हो गया!';
+                    else if (lastMsg.type === 'warehouse_drop') notifTitle = '🏭 माल वेयरहाउस में जमा हो गया!';
+                    else if (lastMsg.type === 'time_extended') notifTitle = '⏳ डिलीवरी का समय आगे बढ़ाया गया';
+                    else if (lastMsg.type === 'delivered') notifTitle = '✅ आर्डर सफलतापूर्वक डिलीवर हो गया!';
 
-                if (exists) return prevOrders.map(o => o.id === updatedOrder.id ? { ...o, ...updatedOrder } : o);
-                else return [updatedOrder, ...prevOrders];
+                    setNotifications(prev => [{
+                      id: Date.now(),
+                      title: notifTitle,
+                      desc: `Order #${updatedOrder.order_no || updatedOrder.id}: ${(lastMsg.text || '').substring(0, 45)}`,
+                      type: 'order',
+                      refId: updatedOrder.id,
+                      isRead: false
+                    }, ...prev.slice(0, 29)]);
+                  }
+                }
+              }
+
+              if (exists) return prevOrders.map(o => o.id === updatedOrder.id ? { ...o, ...updatedOrder } : o);
+              return [updatedOrder, ...prevOrders];
             });
+          }
         }
-    }).subscribe();
+      )
+      .subscribe();
 
-    const chatSubscription = supabase.channel('realtime-helpdesk').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'helpdesk_chats' }, (payload) => { 
-        const newChat = payload.new;
-        if(newChat.sender === 'admin' && String(newChat.shop_id) === String(currentShop?.id)) {
+    const chatSubscription = supabase
+      .channel(`realtime-helpdesk-${myShopIdStr}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'helpdesk_chats' },
+        (payload) => {
+          const newChat: any = payload.new;
+          if (newChat?.sender === 'admin' && String(newChat.shop_id) === myShopIdStr) {
             playAlertSound();
-            setNotifications(prev => [{ id: Date.now(), title: '🎧 Admin Support Reply', desc: newChat.message.substring(0,30) + '...', type: 'admin_chat', isRead: false }, ...prev]);
+            setNotifications(prev => [{
+              id: Date.now(),
+              title: '🎧 Admin Support Reply',
+              desc: (newChat.message || '').substring(0, 30) + '...',
+              type: 'admin_chat',
+              isRead: false
+            }, ...prev.slice(0, 29)]);
+          }
         }
-    }).subscribe();
+      )
+      .subscribe();
 
-    return () => { 
-      supabase.removeChannel(ordersSubscription); 
+    return () => {
+      supabase.removeChannel(ordersSubscription);
       supabase.removeChannel(chatSubscription);
     };
-  }, [currentShop?.id]); 
+  }, [currentShop?.id, playAlertSound]);
 
   const handleNotificationClick = (notif: any) => {
     setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, isRead: true } : n));
     setShowNotifMenu(false);
 
     if (notif.type === 'order' || notif.type === 'order_chat') {
-        handleTabChange('orders');
-        setTargetOrderId(notif.refId); 
+      setTargetOrderId(notif.refId);
+      handleTabChange('orders');
     } else if (notif.type === 'admin_chat') {
-        setOpenAdminChatTrigger(prev => prev + 1); 
+      setOpenAdminChatTrigger(prev => prev + 1);
     }
   };
 
   const unreadCount = notifications.filter(n => !n.isRead).length;
 
-  const fetchAuthAndData = async () => {
-    let phoneNo = '';
-    const savedShopData = localStorage.getItem('fixifiy_shop');
-    if (savedShopData) {
-       try { phoneNo = JSON.parse(savedShopData).phone; } catch(e) {}
-    }
-
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!phoneNo && session?.user) {
-        let sessionPhone = session.user.email?.replace('@fixifiy.in', '').replace(/[^0-9]/g, '');
-        if (sessionPhone && sessionPhone.startsWith('91') && sessionPhone.length === 12) {
-            sessionPhone = sessionPhone.substring(2);
-        }
-        phoneNo = sessionPhone || '';
-    }
-
-    let shopData = null;
-
-    if (phoneNo) {
-        const { data } = await supabase.from('shops').select('*').eq('phone', phoneNo).maybeSingle();
-        if (data) {
-            shopData = data;
-            setCurrentShop(data);
-            localStorage.setItem('fixifiy_shop', JSON.stringify(data)); 
-        }
-    } else {
-        router.push('/login');
-        return;
-    }
+  // 🔥 TRIGGER NIGARNI FOR MANUAL REFRESH 🔥
+  const handleManualRefresh = async () => {
+    if (!currentShop?.id) return;
+    await Promise.all([
+      fetchProducts(true, currentShop.id),
+      fetchOrders(currentShop.id, true),
+      fetchNotices()
+    ]);
     
-    fetchProducts(false);
-    if(shopData?.id) fetchOrders(shopData.id, false); 
-    fetchNotices(); 
-  };
-
-  const fetchNotices = async () => {
-    const { data } = await supabase.from('notices').select('*').eq('is_active', true).order('created_at', { ascending: false });
-    if (data) setNotices(data);
-  };
-
-  const fetchProducts = async (forceRefresh = false) => {
-    if (!forceRefresh) {
-      const cached = localStorage.getItem('fixifiy_products');
-      const time = localStorage.getItem('fixifiy_products_time');
-      if (cached && time && (Date.now() - Number(time) < 86400000)) { 
-         setProducts(JSON.parse(cached));
-         return;
-      }
-    }
-    const { data } = await supabase.from('products').select('*'); 
-    if (data) setProducts(data); 
-  };
-  
-  const fetchOrders = async (shopIdToFetch?: string | number, forceRefresh = false) => {
-    const sid = shopIdToFetch !== undefined ? shopIdToFetch : currentShop?.id;
-    if (!sid) return; 
-
-    if (!forceRefresh) {
-      const cached = localStorage.getItem(`fixifiy_orders_${sid}`);
-      const time = localStorage.getItem(`fixifiy_orders_time_${sid}`);
-      if (cached && time && (Date.now() - Number(time) < 86400000)) { 
-         setOrders(JSON.parse(cached));
-         return;
-      }
-    }
-
-    const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false }); 
-      
-    if (!error) {
-      const parsedOrders = (data || []).map(order => {
-        let parsedMsgs = order.messages;
-        if (typeof parsedMsgs === 'string') { try { parsedMsgs = JSON.parse(parsedMsgs); } catch(e) { parsedMsgs = []; } }
-        if (!Array.isArray(parsedMsgs)) parsedMsgs = [];
-        return { 
-          ...order, 
-          messages: parsedMsgs,
-          is_payment_verified: order.is_payment_verified ?? false 
-        };
-      });
-
-      const finalOrders = parsedOrders.filter(o => {
-        const oShopId = String(o.shop_id || '').trim();
-        const myShopId = String(sid).trim();
-        if (String(o.type || '').trim().toLowerCase().includes('labour')) return false; 
-        return oShopId === myShopId;
-      });
-
-      setOrders(finalOrders);
-    }
-  };
-
-  const handleManualRefresh = () => {
-    fetchProducts(true);
-    fetchOrders(currentShop?.id, true);
-    fetchAuthAndData();
+    await logNigraniActivity(currentShop, 'MANUAL_DATA_REFRESH', 'Shop owner manually refreshed dashboard data.');
+    
     alert("✅ Data Successfully Refreshed from Server!");
   };
 
@@ -265,29 +380,34 @@ export default function ShopOwnerDashboard() {
     window.history.pushState(null, '', window.location.href);
   };
 
+  // 🔥 TRIGGER NIGARNI FOR LOGOUT 🔥
   const handleLogout = async () => { 
-      localStorage.removeItem('fixifiy_shop'); 
-      localStorage.removeItem('shop_login_time'); 
-      localStorage.removeItem('fixifiy_products');
-      localStorage.removeItem('fixifiy_products_time');
-      if (currentShop?.id) {
-        localStorage.removeItem(`fixifiy_orders_${currentShop.id}`);
-        localStorage.removeItem(`fixifiy_orders_time_${currentShop.id}`);
-      }
-      await supabase.auth.signOut(); 
-      router.push('/'); 
+    if (currentShop?.id) {
+       await logNigraniActivity(currentShop, 'SHOP_LOGOUT', 'Shop owner signed out of the dashboard.');
+    }
+    
+    localStorage.removeItem('fixifiy_shop'); 
+    localStorage.removeItem('shop_login_time'); 
+    localStorage.removeItem('fixifiy_products');
+    localStorage.removeItem('fixifiy_products_time');
+    if (currentShop?.id) {
+      localStorage.removeItem(`fixifiy_orders_${currentShop.id}`);
+      localStorage.removeItem(`fixifiy_orders_time_${currentShop.id}`);
+    }
+    await supabase.auth.signOut(); 
+    router.push('/'); 
   };
 
   return (
     <div style={{ backgroundColor: '#0f172a', minHeight: '100vh', width: '100%', boxSizing: 'border-box', padding: '15px', color: 'white', fontFamily: 'sans-serif', position: 'relative', overflowX: 'hidden' }}>
       
-      {/* 📢 NOTICE BOARD */}
+      {/* 📢 LIGHTWEIGHT NOTICE BOARD */}
       {notices.length > 0 && (
-        <div style={{ backgroundColor: '#fef3c7', borderLeft: '5px solid #f59e0b', padding: '10px', borderRadius: '8px', marginBottom: '20px', color: '#b45309', display: 'flex', alignItems: 'center' }}>
-          <strong style={{ fontSize: '16px', marginRight: '10px' }}>📢 NOTICE:</strong>
-          <marquee behavior="scroll" direction="left" scrollamount="6" style={{ fontWeight: 'bold', fontSize: '14px' }}>
-            {notices.map((n, i) => <span key={i} style={{ marginRight: '40px' }}>⭐ {n.message}</span>)}
-          </marquee>
+        <div style={{ backgroundColor: '#fef3c7', borderLeft: '5px solid #f59e0b', padding: '10px 14px', borderRadius: '8px', marginBottom: '20px', color: '#b45309', display: 'flex', alignItems: 'center', gap: '10px', overflowX: 'auto', whiteSpace: 'nowrap' }}>
+          <strong style={{ fontSize: '14px' }}>📢 NOTICE:</strong>
+          <div style={{ fontWeight: 'bold', fontSize: '13px', display: 'flex', gap: '25px' }}>
+            {notices.map((n, i) => <span key={i}>⭐ {n.message}</span>)}
+          </div>
         </div>
       )}
 
@@ -295,10 +415,12 @@ export default function ShopOwnerDashboard() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '15px', position: 'relative' }}>
         
         <div onClick={() => handleTabChange('sales')} style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-          {currentShop?.profile_pic ? <img src={currentShop.profile_pic} style={{ width: '50px', height: '50px', borderRadius: '50%', objectFit: 'cover' }} /> : <div style={{ fontSize: '35px' }}>🏪</div>}
+          {currentShop?.profile_pic ? <img src={currentShop.profile_pic} alt="Shop" style={{ width: '50px', height: '50px', borderRadius: '50%', objectFit: 'cover' }} /> : <div style={{ fontSize: '35px' }}>🏪</div>}
           <div>
             <h1 style={{ color: '#38bdf8', margin: 0, fontSize: '18px' }}>Fixifiy Shop Dashboard</h1>
-            <p style={{ color: '#94a3b8', margin: '3px 0 0 0', fontSize: '13px' }}><strong>{currentShop?.name || 'New Shop'}</strong></p>
+            <p style={{ color: '#94a3b8', margin: '3px 0 0 0', fontSize: '13px' }}>
+              <strong>{currentShop?.name || (isLoadingData ? 'Loading Shop...' : 'New Shop')}</strong> {currentShop?.block ? `(${currentShop.block})` : ''}
+            </p>
           </div>
         </div>
         
@@ -313,14 +435,14 @@ export default function ShopOwnerDashboard() {
              </button>
              
              {showNotifMenu && (
-               <div style={{ position: 'absolute', top: '45px', right: '0', width: '280px', backgroundColor: '#1e293b', border: '1px solid #38bdf8', borderRadius: '12px', zIndex: 1000, boxShadow: '0 10px 25px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
+               <div style={{ position: 'absolute', top: '45px', right: '0', width: '290px', backgroundColor: '#1e293b', border: '1px solid #38bdf8', borderRadius: '12px', zIndex: 1000, boxShadow: '0 10px 25px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
                   <div style={{ padding: '12px 15px', backgroundColor: '#0284c7', color: 'white', fontWeight: 'bold', fontSize: '14px' }}>Notifications</div>
                   <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
                      {notifications.length === 0 ? (
                          <div style={{ padding: '20px', textAlign: 'center', color: '#64748b', fontSize: '13px' }}>No new notifications</div>
                      ) : (
                          notifications.map((n) => (
-                             <div key={n.id} onClick={() => handleNotificationClick(n)} style={{ padding: '12px 15px', borderBottom: '1px solid #334155', cursor: 'pointer', backgroundColor: n.isRead ? '#1e293b' : '#0f172a', transition: '0.2s' }}>
+                             <div key={n.id} onClick={() => handleNotificationClick(n)} style={{ padding: '12px 15px', borderBottom: '1px solid #334155', cursor: 'pointer', backgroundColor: n.isRead ? '#1e293b' : '#0f172a' }}>
                                  <div style={{ fontSize: '14px', fontWeight: 'bold', color: n.isRead ? '#94a3b8' : '#38bdf8', marginBottom: '4px' }}>{n.title}</div>
                                  <div style={{ fontSize: '12px', color: '#cbd5e1' }}>{n.desc}</div>
                              </div>
@@ -343,8 +465,10 @@ export default function ShopOwnerDashboard() {
       {/* TABS BUTTONS */}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', overflowX: 'auto', whiteSpace: 'nowrap', paddingBottom: '5px' }}>
         <button onClick={() => handleTabChange('sales')} style={tabBtn(activeTab === 'sales')}>📈 Sales & Ledger</button>
-        <button onClick={() => handleTabChange('orders')} style={tabBtn(activeTab === 'orders')}>🛒 Orders</button>
-        <button onClick={() => handleTabChange('inventory')} style={tabBtn(activeTab === 'inventory')}>📦 Inventory</button>
+        <button onClick={() => handleTabChange('counter_pos')} style={tabBtn(activeTab === 'counter_pos')}>🧾 Counter Billing (POS)</button>
+        <button onClick={() => handleTabChange('orders')} style={tabBtn(activeTab === 'orders')}>🛒 Orders ({orders.length})</button>
+        <button onClick={() => handleTabChange('delivery_partners')} style={tabBtn(activeTab === 'delivery_partners')}>🛵 Delivery Partners</button>
+        <button onClick={() => handleTabChange('inventory')} style={tabBtn(activeTab === 'inventory')}>📦 Inventory ({products.length})</button>
         <button onClick={() => handleTabChange('wallet')} style={tabBtn(activeTab === 'wallet')}>💳 Wallet</button>
         <button onClick={() => handleTabChange('stock')} style={tabBtn(activeTab === 'stock')}>📊 Stock Report</button>
       </div>
@@ -353,17 +477,43 @@ export default function ShopOwnerDashboard() {
       <div style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', width: '100%', boxSizing: 'border-box' }}>
         {(activeTab === 'sales' || activeTab === 'stock') && <SalesAndStockTab activeTab={activeTab} orders={orders} currentShop={currentShop} products={products} fetchProducts={fetchProducts} fetchOrders={fetchOrders} />}
         
+        {activeTab === 'counter_pos' && (
+          <CounterBillingTab
+            currentShop={currentShop}
+            setCurrentShop={setCurrentShop}
+            products={products}
+            fetchProducts={fetchProducts}
+            orders={orders}
+            setOrders={setOrders}
+            fetchOrders={fetchOrders}
+            mode="pos"
+          />
+        )}
+
+        {activeTab === 'delivery_partners' && (
+          <CounterBillingTab
+            currentShop={currentShop}
+            setCurrentShop={setCurrentShop}
+            products={products}
+            fetchProducts={fetchProducts}
+            orders={orders}
+            setOrders={setOrders}
+            fetchOrders={fetchOrders}
+            mode="delivery_partners"
+          />
+        )}
+
+        {/* 🎯 TARGET ORDER ID PROPS PASSED HERE */}
         {activeTab === 'orders' && <OrdersTab targetOrderId={targetOrderId} setTargetOrderId={setTargetOrderId} orders={orders} setOrders={setOrders} products={products} currentShop={currentShop} fetchOrders={fetchOrders} fetchProducts={fetchProducts} />}
         
         {activeTab === 'inventory' && <InventoryTab products={products} fetchProducts={fetchProducts} currentShop={currentShop} />}
         
-        {/* 🔥 WALLET PASSBOOK Jisme onGoToOrder function pass kiya gaya hai 🔥 */}
         {activeTab === 'wallet' && (
           <ShopWalletPassbook 
             supabase={supabase} 
             shopUser={currentShop} 
             setAppStep={() => handleTabChange('sales')} 
-            onGoToOrder={(orderId: string) => {
+            onGoToOrder={(orderId: any) => {
               setTargetOrderId(orderId);
               handleTabChange('orders');
             }}

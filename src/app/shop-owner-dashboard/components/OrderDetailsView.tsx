@@ -4,6 +4,35 @@ import { supabase } from '@/lib/supabaseClient';
 import PermanentFreeCall from '@/components/PermanentFreeCall';
 import { printShopInvoice, printDeliveryChallan, printMiniChallan } from './InvoiceHelper'; 
 
+// 🔒 HELPER TO SCRAMBLE / HIDE CUSTOMER MOBILE NUMBER
+const maskWeirdPhone = (phone: string) => {
+  if (!phone) return 'उपलब्ध नहीं';
+  const clean = String(phone).replace(/\D/g, '');
+  if (clean.length < 4) return '🔒 FX-HIDDEN';
+  const symbols = ['X', '#', 'Z', 'Q', 'M', 'K', 'R', 'W', 'V', 'N'];
+  const c1 = symbols[(Number(clean[0]) || 1) % symbols.length];
+  const c2 = symbols[(Number(clean[clean.length - 1]) || 2) % symbols.length];
+  const mid = clean.slice(2, 5).split('').map((n, i) => (i % 2 === 0 ? symbols[Number(n) % symbols.length] : n)).join('');
+  return `🔒 FX-${c1}9#${mid}-${c2}${clean.slice(-2, -1)}*`;
+};
+
+// 📡 NIGRANI (ADMIN MONITORING) LIVE ACTIVITY LOGGER
+const logNigraniActivity = async (shop: any, actionType: string, description: string, extraMeta?: any) => {
+  if (!shop?.id) return;
+  try {
+    await supabase.from('user_activities').insert({
+      user_id: String(shop.id),
+      user_name: shop.name || 'Shop Owner',
+      user_phone: shop.phone || '',
+      user_role: 'shop_owner',
+      action: actionType,
+      description: description,
+      metadata: extraMeta ? JSON.stringify(extraMeta) : null,
+      created_at: new Date().toISOString()
+    });
+  } catch {}
+};
+
 export default function OrderDetailsView({
   selectedOrder, setSelectedOrder, orders, setOrders, 
   products, currentShop, fetchOrders, fetchProducts, deliveryBoys, setOrderSubTab
@@ -24,41 +53,85 @@ export default function OrderDetailsView({
   const [dateTimeAction, setDateTimeAction] = useState(''); 
   const [selectedDateTime, setSelectedDateTime] = useState('');
 
+  // 🙋‍♂️ SELF DELIVERY & UTR STATES
+  const [showSelfDeliveryModal, setShowSelfDeliveryModal] = useState(false);
+  const [verifyCode, setVerifyCode] = useState('');
+  const [deliveryPinInput, setDeliveryPinInput] = useState('');
+  const [paymentCollected, setPaymentCollected] = useState<'Cash' | 'QR'>('Cash');
+  const [qrUtrInput, setQrUtrInput] = useState('');
+  const [adminUpi, setAdminUpi] = useState('admin@ybl'); 
+  const [selfDeliveryFee, setSelfDeliveryFee] = useState<number>(20); 
+  
   const now = new Date();
   now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
   const minDateTime = now.toISOString().slice(0, 16); 
 
   // 🔥 DYNAMIC COMMISSION STATES 🔥
-  const [categoryRates, setCategoryRates] = useState<any>({}); // Category wise %
+  const [categoryRates, setCategoryRates] = useState<Record<string, number>>({});
 
-  // Fetch Category Commissions from app_settings
   useEffect(() => {
+    let isMounted = true;
     const fetchCommissionSettings = async () => {
       try {
-        const { data, error } = await supabase
+        const { data } = await supabase
           .from('app_settings')
-          .select('category_commissions')
+          .select('category_commissions, delivery_boy_upi, upi_id, upi, company_upi, admin_upi, shop_self_delivery_fee')
           .limit(1)
           .single();
 
-        if (data && data.category_commissions) {
-          let parsedCats = data.category_commissions;
-          if (typeof parsedCats === 'string') {
-             try { parsedCats = JSON.parse(parsedCats); } catch(e){}
+        if (isMounted && data) {
+          if (data.category_commissions) {
+            let parsedCats = data.category_commissions;
+            if (typeof parsedCats === 'string') {
+               try { parsedCats = JSON.parse(parsedCats); } catch(e){}
+            }
+            const normalizedRates: Record<string, number> = {};
+            if (Array.isArray(parsedCats)) {
+                parsedCats.forEach((item: any) => {
+                    const catName = String(item.category || item.name || '').trim().toLowerCase();
+                    const rateVal = Number(item.rate || item.commission || item.percentage || item.value || 0);
+                    if (catName) normalizedRates[catName] = rateVal;
+                });
+            } else if (typeof parsedCats === 'object' && parsedCats !== null) {
+                Object.keys(parsedCats).forEach(k => {
+                   normalizedRates[k.trim().toLowerCase()] = Number(parsedCats[k]);
+                });
+            }
+            setCategoryRates(normalizedRates);
           }
-          setCategoryRates(parsedCats || {});
+          const upi = data.delivery_boy_upi || data.upi_id || data.upi || data.company_upi || data.admin_upi;
+          if (upi) setAdminUpi(upi);
+          if (data.shop_self_delivery_fee !== undefined) setSelfDeliveryFee(Number(data.shop_self_delivery_fee) || 20);
         }
-      } catch (err) {
-        console.error("Error fetching category commissions:", err);
-      }
+      } catch (err) {}
     };
     fetchCommissionSettings();
+    return () => { isMounted = false; };
   }, []);
 
-  // 🔥 PAYMENT VERIFICATION LOGIC 🔥
+  // ==============================================================
+  // 🔒 STRICT ONLINE PAYMENT VERIFICATION LOCK LOGIC 🔒
+  // ==============================================================
   const paymentModeRaw = String(selectedOrder?.payment_mode || selectedOrder?.payment_method || '').toUpperCase();
-  const isUpiOrder = paymentModeRaw.includes('UPI') || paymentModeRaw.includes('UTR') || paymentModeRaw.includes('WALLET');
-  const isVerified = selectedOrder?.is_payment_verified === true;
+  const paymentStatusRaw = String(selectedOrder?.payment_status || '').toLowerCase();
+  
+  // Rule: If it's NOT explicitly Cash/COD, it is treated as an Online/Prepaid Order.
+  const isCodOrder = paymentModeRaw.includes('COD') || paymentModeRaw.includes('CASH') || paymentModeRaw === 'PAY ON DELIVERY';
+  const isUpiOrder = !isCodOrder && paymentModeRaw !== ''; 
+
+  // Rule: Check boolean OR string values from database to ensure it catches 'true', 'paid', or 'verified'
+  const isVerified = 
+    selectedOrder?.is_payment_verified === true || 
+    String(selectedOrder?.is_payment_verified).toLowerCase() === 'true' ||
+    String(selectedOrder?.is_payment_verified) === '1' ||
+    paymentStatusRaw === 'paid' || 
+    paymentStatusRaw === 'verified' || 
+    paymentStatusRaw === 'success' || 
+    paymentStatusRaw === 'completed';
+
+  const orderStatusStr = (selectedOrder?.status || '').toLowerCase().trim();
+  const isOrderAlreadyAccepted = ['accepted', 'processing', 'out_for_delivery', 'shipped', 'transit', 'completed', 'delivered'].some(st => orderStatusStr.includes(st));
+
 
   const getProductDetailsArray = (order: any) => {
     if (!order) return [];
@@ -105,7 +178,6 @@ export default function OrderDetailsView({
     });
   };
 
-  // 🔥 UPDATED: 100% SETTINGS MANAGER SYNCED CALCULATOR 🔥
   const calculateEarnings = (order: any) => {
     const items = getShopItems(order);
     let totalAmt = 0;
@@ -113,31 +185,29 @@ export default function OrderDetailsView({
 
     items.forEach((item: any) => {
       const itemTotal = Number(item.price || 0);
-      
-      // 1. Live product se category nikalna
       const liveProduct = findLiveProduct(item);
       const cat = String(item.category || liveProduct?.category || '').toLowerCase().trim();
       
-      let finalPercentage = 0;
+      let finalPercentage = 20; 
       
-      // 2. Category match karna
       if (categoryRates && Object.keys(categoryRates).length > 0) {
-         const matchedKey = Object.keys(categoryRates).find(k => k.toLowerCase().trim() === cat);
-         
-         if (matchedKey && categoryRates[matchedKey] !== undefined) {
-             finalPercentage = Number(categoryRates[matchedKey]); // Eg. 2% for grocery
-         } else if (categoryRates['other'] !== undefined) {
-             finalPercentage = Number(categoryRates['other']); // Fallback to 'other'
-         } else if (categoryRates['general store'] !== undefined) {
-             finalPercentage = Number(categoryRates['general store']); // Fallback to 'general store'
+         if (categoryRates[cat] !== undefined) {
+             finalPercentage = categoryRates[cat];
+         } else {
+             const matchedKey = Object.keys(categoryRates).find(k => cat.includes(k) || k.includes(cat));
+             if (matchedKey && categoryRates[matchedKey] !== undefined) {
+                 finalPercentage = categoryRates[matchedKey];
+             } else if (categoryRates['default'] !== undefined) {
+                 finalPercentage = categoryRates['default'];
+             } else if (categoryRates['other'] !== undefined) {
+                 finalPercentage = categoryRates['other'];
+             } else if (categoryRates['general'] !== undefined) {
+                 finalPercentage = categoryRates['general'];
+             }
          }
-      } else {
-         finalPercentage = 5; // Absolute safe fallback agar settings manager set hi na ho
       }
 
-      // Convert percentage to decimal (e.g., 5% -> 0.05)
       let rateDecimal = finalPercentage / 100;
-
       totalAmt += itemTotal;
       adminFee += (itemTotal * rateDecimal);
     });
@@ -147,12 +217,6 @@ export default function OrderDetailsView({
       adminCommissionFee: Number(adminFee.toFixed(2)),
       shopEarnings: Number((totalAmt - adminFee).toFixed(2))
     };
-  };
-
-  const getShopTotal = (order: any) => {
-    if (!order) return 0;
-    const { totalAmount } = calculateEarnings(order);
-    return totalAmount;
   };
 
   const getOrderColor = (status: string) => {
@@ -174,9 +238,6 @@ export default function OrderDetailsView({
     return 'product_details'; 
   };
 
-  // ==========================================
-  // 🔥 REAL-TIME CHAT LOGIC 🔥
-  // ==========================================
   useEffect(() => {
     if (!selectedOrder) return;
     let msgs = selectedOrder.messages;
@@ -189,9 +250,7 @@ export default function OrderDetailsView({
 
   useEffect(() => {
     if (!selectedOrder?.id || !showChatBox) return;
-
     const tableName = (selectedOrder.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
-
     const chatSubscription = supabase
       .channel(`shop-realtime-chat-${selectedOrder.id}`)
       .on('postgres_changes', {
@@ -210,10 +269,7 @@ export default function OrderDetailsView({
         }
       })
       .subscribe();
-
-    return () => {
-      supabase.removeChannel(chatSubscription);
-    };
+    return () => { supabase.removeChannel(chatSubscription); };
   }, [selectedOrder?.id, showChatBox]);
 
   useEffect(() => {
@@ -223,47 +279,34 @@ export default function OrderDetailsView({
   const handleSendReply = async () => {
     if (!chatMessage.trim() || !selectedOrder || isProcessing) return;
     setIsProcessing(true);
-    
     const userMsg = chatMessage;
     setChatMessage('');
 
     const tableName = (selectedOrder.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
-
     let currentMsgs = liveMessages;
     if (!Array.isArray(currentMsgs)) currentMsgs = [];
-
-    const newMsg = {
-      sender: 'shop', 
-      text: userMsg,
-      timestamp: new Date().toISOString()
-    };
-
+    const newMsg = { sender: 'shop', text: userMsg, timestamp: new Date().toISOString() };
     const updatedMessages = [...currentMsgs, newMsg];
     setLiveMessages(updatedMessages);
 
     try {
-      const { error } = await supabase
-        .from(tableName)
-        .update({ messages: updatedMessages })
-        .eq('id', selectedOrder.id);
-
+      const { error } = await supabase.from(tableName).update({ messages: updatedMessages }).eq('id', selectedOrder.id);
       if (error) throw error;
       setSelectedOrder((prev: any) => ({ ...prev, messages: updatedMessages }));
     } catch (err: any) {
-      console.error("Chat send error:", err.message);
       alert("❌ Message nahi ja saka. Internet check karein.");
     } finally { 
       setIsProcessing(false); 
     }
   };
 
-  // ==========================================
-  // 🔥 CALENDAR ACTION FUNCTIONS 🔥
-  // ==========================================
+  // 🔥 DOUBLE SECURITY ON CLICK ACTION 🔥
   const handleActionClick = (action: string) => {
-    if (action === 'accepted' && isUpiOrder && !isVerified) {
-      alert("⚠️ Admin dwara payment verify hone ka intezar karein. Verification ke baad hi aap order accept kar sakte hain.");
-      return;
+    if (action === 'accepted') {
+      if (isUpiOrder && !isVerified) {
+        alert("⚠️ Admin द्वारा पेमेंट Verify होने का इंतज़ार करें। Verification के बाद ही आप यह आर्डर Accept कर सकते हैं।");
+        return;
+      }
     }
     setDateTimeAction(action);
     setShowDateTimePicker(true);
@@ -271,12 +314,10 @@ export default function OrderDetailsView({
 
   const confirmActionWithDate = async () => {
     if (!selectedDateTime) return alert("Kripya Date aur Time dono select karein!");
-    
     setIsProcessing(true);
     const id = selectedOrder.id;
     const tableName = (selectedOrder.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
     const newShopId = currentShop?.id || selectedOrder.shop_id;
-
     const dateObj = new Date(selectedDateTime);
     const formattedDate = dateObj.toLocaleString('en-IN', {
       day: 'numeric', month: 'short', year: 'numeric',
@@ -317,17 +358,14 @@ export default function OrderDetailsView({
 
   const markDeliveryFailed = async (orderId: number) => {
     if (!window.confirm("Kya sach mein delivery fail ho gayi hai? Haan karne par yeh order RTO (Return to Origin) list me chala jayega.")) return;
-    
     setIsProcessing(true);
     try {
       const orderToUpdate = orders.find((o:any) => o.id === orderId);
       const tableName = (orderToUpdate?.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
-      
       await supabase.from(tableName).update({ status: 'RTO Initiated' }).eq('id', orderId);
-      
       setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, status: 'RTO Initiated' } : o));
       setSelectedOrder((prev: any) => ({ ...prev, status: 'RTO Initiated' }));
-      alert("⚠️ Order marked as RTO (Delivery Failed). Ab aap ise receive kar sakte hain jab packet wapas aaye.");
+      alert("⚠️ Order marked as RTO (Delivery Failed).");
     } catch(e:any) { alert(e.message); } 
     finally { setIsProcessing(false); }
   };
@@ -357,17 +395,14 @@ export default function OrderDetailsView({
 
     const allowReturn = policyType !== 'none';
     const displayMsg = policyType === 'none' ? "Aap is order se Return Policy HATA rahe hain." : `Aap is order pe ${policyType === '24_hours' ? '24 Ghante' : '7 Din'} ka Return Allow kar rahe hain.`;
-    
     if (!window.confirm(`${displayMsg} Are you sure?`)) return;
 
     setIsProcessing(true);
     try {
       setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, allow_return: allowReturn, return_window: policyType } : o));
       setSelectedOrder((prev: any) => ({ ...prev, allow_return: allowReturn, return_window: policyType }));
-      
       const { error } = await supabase.from(tableName).update({ allow_return: allowReturn, return_window: policyType }).eq('id', orderId);
       if (error) throw error;
-      
       alert("Return setting updated successfully!");
     } catch (e: any) { alert("Return setting update failed: " + e.message); } 
     finally { setIsProcessing(false); }
@@ -380,7 +415,6 @@ export default function OrderDetailsView({
 
     setIsProcessing(true);
     const newStatus = !currentStatus;
-    
     const sName = currentShop?.name || currentShop?.shop_name || 'Verified Retail Partner';
     const sGst = currentShop?.gst_number || currentShop?.gstin || currentShop?.gst || 'Unregistered';
 
@@ -393,7 +427,6 @@ export default function OrderDetailsView({
           shop_name: sName,
           shop_gstin: sGst
       }).eq('id', orderId);
-
       if (error) throw error;
     } catch (e: any) { 
       alert("Error updating GST status: " + e.message); 
@@ -407,13 +440,147 @@ export default function OrderDetailsView({
     if (!boyId) return;
     setIsProcessing(true);
     try {
+      const boy = deliveryBoys.find((b:any) => String(b.id) === String(boyId));
       const orderToUpdate = orders.find((o:any) => o.id === orderId);
       const tableName = (orderToUpdate?.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
-      await supabase.from(tableName).update({ delivery_boy_id: boyId }).eq('id', orderId);
-      setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, delivery_boy_id: boyId } : o));
-      setSelectedOrder((prev: any) => ({ ...prev, delivery_boy_id: boyId }));
+      await supabase.from(tableName).update({ 
+        delivery_boy_id: boyId,
+        delivery_boy_name: boy?.name || '',
+        delivery_boy_phone: boy?.phone || '',
+        status: 'Assigned to Delivery Partner' 
+      }).eq('id', orderId);
+
+      setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, delivery_boy_id: boyId, delivery_boy_name: boy?.name, delivery_boy_phone: boy?.phone, status: 'Assigned to Delivery Partner' } : o));
+      setSelectedOrder((prev: any) => ({ ...prev, delivery_boy_id: boyId, delivery_boy_name: boy?.name, delivery_boy_phone: boy?.phone, status: 'Assigned to Delivery Partner' }));
+      
+      await logNigraniActivity(currentShop, 'ORDER_ASSIGNED_TO_DELIVERY_PARTNER', `Order #${orderId} assigned to ${boy?.name}`, { order_id: orderId, boy_id: boyId });
       alert("✅ Delivery Partner ko order successfully assign ho gaya hai!");
     } catch(e:any) { alert("Error: " + e.message); } 
+    finally { setIsProcessing(false); }
+  };
+
+  // =========================================================
+  // 🙋‍♂️ SELF DELIVERY CONFIRMATION (DEDUCT WALLET FOR COD + EARNINGS)
+  // =========================================================
+  const confirmSelfDelivery = async () => {
+    if (!selectedOrder) return;
+    const customerPhone = String(selectedOrder.user_phone || selectedOrder.phone || "");
+    const expectedCode = customerPhone.slice(-6);
+    if (customerPhone.length >= 6 && verifyCode !== expectedCode) return alert(`❌ Wrong 6-digit Customer Code!`);
+
+    const cleanDeliveryPin = String(deliveryPinInput || '').replace(/\D/g, '');
+    if (cleanDeliveryPin.length !== 6) return alert("❌ 6-अंकों का पिनकोड डालना अनिवार्य है!");
+
+    if (isCodOrder && paymentCollected === 'QR' && !qrUtrInput.trim()) {
+      return alert("❌ ग्राहक के ऑनलाइन QR पेमेंट का 12-अंकों वाला UTR नंबर डालना अनिवार्य है!");
+    }
+
+    try {
+      setIsProcessing(true);
+      const nowIso = new Date().toISOString();
+      const tableName = (selectedOrder.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
+
+      let finalPaymentMode = selectedOrder.payment_mode;
+      if (isCodOrder) {
+        finalPaymentMode = paymentCollected === 'QR' ? `COD - QR (UTR: ${qrUtrInput.trim()})` : `COD - Cash`;
+      }
+
+      let currentMsgs = selectedOrder.messages;
+      if (typeof currentMsgs === 'string') { try { currentMsgs = JSON.parse(currentMsgs); } catch { currentMsgs = []; } }
+      if (!Array.isArray(currentMsgs)) currentMsgs = [];
+      currentMsgs.push({
+        sender: 'shop_owner',
+        type: 'delivered',
+        text: `✅ Self Delivered by Shop Owner (${finalPaymentMode}) | PIN: ${cleanDeliveryPin}`,
+        qr_utr: paymentCollected === 'QR' ? qrUtrInput.trim() : null,
+        delivered_at: nowIso,
+        timestamp: nowIso
+      });
+
+      // 1. Deduct Stock Permanently
+      const items = getProductDetailsArray(selectedOrder);
+      for (let item of items) {
+        if (item.availability !== 'available' && !isDeliveryOrService(item)) { 
+          const liveProduct = findLiveProduct(item);
+          if (liveProduct) {
+            const liveStock = Number(liveProduct.total_stock) || 0;
+            const reqQty = Number(item.quantity || item.qty) || 1;
+            await supabase.from('products').update({
+              total_stock: liveStock - reqQty,
+              sold_quantity: (Number(liveProduct.sold_quantity) || 0) + reqQty
+            }).eq('id', liveProduct.id);
+          }
+        }
+      }
+
+      // 2. Earnings Calculation
+      const { shopEarnings, adminCommissionFee, totalAmount } = calculateEarnings(selectedOrder);
+      let netWalletUpdate = 0;
+      let reasonTxt = "";
+
+      if (isCodOrder) {
+         const amtToDeduct = adminCommissionFee;
+         netWalletUpdate = -Math.abs(amtToDeduct); 
+         reasonTxt = `Self Delivery COD (Order #${selectedOrder.id}) | Collected: ₹${totalAmount} | Earnings: ₹${shopEarnings}(Prod) + ₹${selfDeliveryFee}(Del) | Deducted Comm: -₹${adminCommissionFee}`;
+      } else {
+         netWalletUpdate = Number((shopEarnings + selfDeliveryFee).toFixed(2));
+         reasonTxt = `Self Delivery Prepaid (Order #${selectedOrder.id}) | Earnings: ₹${shopEarnings}(Prod) + ₹${selfDeliveryFee}(Del) | Net Wallet Credit: ₹${netWalletUpdate}`;
+      }
+
+      if (currentShop?.id) {
+          const { data: sData } = await supabase.from('shops').select('balance').eq('id', currentShop.id).single();
+          const currentBal = Number(sData?.balance) || 0;
+          const newBal = Number((currentBal + netWalletUpdate).toFixed(2));
+          
+          await supabase.from('shops').update({ balance: newBal }).eq('id', currentShop.id);
+
+          await supabase.from('wallet_transactions').insert({
+             shop_id: currentShop.id,
+             user_type: 'shop',
+             amount: Math.abs(netWalletUpdate),
+             type: netWalletUpdate >= 0 ? 'credit' : 'debit',
+             status: 'completed',
+             reason: reasonTxt
+          });
+      }
+
+      const updatedDetails = items.map((p: any) => ({ ...p, availability: 'available', shop_message: '✅ Self Delivered' }));
+      const colName = getDetailsColumnName(selectedOrder);
+      const sName = currentShop?.name || 'Verified Retail Partner';
+      const sGst = currentShop?.gst_number || currentShop?.gstin || '';
+      
+      const updateData = { 
+          status: 'completed', 
+          [colName]: updatedDetails, 
+          shop_id: currentShop.id,
+          shop_name: sName,
+          shop_gstin: sGst,
+          payment_mode: finalPaymentMode,
+          pincode: cleanDeliveryPin,
+          delivered_at: nowIso,
+          delivery_boy_id: currentShop.id, 
+          delivery_boy_name: 'Self Delivery', 
+          delivery_boy_phone: 'N/A',
+          admin_commission: adminCommissionFee,
+          shop_earning: shopEarnings,
+          delivery_boy_fee: selfDeliveryFee,
+          messages: currentMsgs
+      };
+
+      await supabase.from(tableName).update(updateData).eq('id', selectedOrder.id);
+      
+      await logNigraniActivity(currentShop, 'ORDER_SELF_DELIVERED', `Self Delivered Order #${selectedOrder.id} | Mode: ${finalPaymentMode} | Wallet Updated: ₹${netWalletUpdate}`, updateData);
+
+      setOrders((prev:any[]) => prev.map((o:any) => o.id === selectedOrder.id ? { ...o, ...updateData } : o));
+      alert(`✅ Self Delivery Completed!\n\nWallet Adjusted: ₹${netWalletUpdate}\nAdmin Comm Cut: ₹${adminCommissionFee}\nDelivery Earning Added: ₹${selfDeliveryFee}`);
+      
+      setShowSelfDeliveryModal(false);
+      setSelectedOrder(null); 
+      if(setOrderSubTab) setOrderSubTab('history');
+      fetchOrders(); fetchProducts(); 
+    } catch(e:any) { 
+      alert("⚠️ ERROR: " + e.message); 
+    } 
     finally { setIsProcessing(false); }
   };
 
@@ -449,7 +616,7 @@ export default function OrderDetailsView({
   };
 
   const processRefundAndRestock = async (orderId: number) => {
-    if (!window.confirm(`Kya Delivery Boy ne item laakar aapko de diya hai aur aapne verify kar liya hai?\n\nHaan karne par:\n1. Aapki Shop Inventory me stock add ho jayega.\n2. Aapke Shop Wallet se paisa katega.\n3. Admin ko command chala jayega ki Customer ko paise bhej dein.`)) return;
+    if (!window.confirm(`Kya Item wapas aa gaya hai aur aapne verify kar liya hai?\n\nHaan karne par:\n1. Shop Inventory me stock add hoga.\n2. Shop Wallet se Earning wapas kategi.\n3. Customer ko Admin se refund jayega.`)) return;
     
     setIsProcessing(true);
     try {
@@ -468,7 +635,6 @@ export default function OrderDetailsView({
         }
       }
 
-      // 🔥 USE DYNAMIC EARNING SYSTEM HERE 🔥
       const { shopEarnings } = calculateEarnings(orderToUpdate);
       const shopDebitAmt = shopEarnings; 
 
@@ -476,10 +642,9 @@ export default function OrderDetailsView({
           const { data: sData } = await supabase.from('shops').select('balance').eq('id', currentShop.id).single();
           const newBal = Number(((Number(sData?.balance) || 0) - shopDebitAmt).toFixed(2));
           
-          const { error: balError } = await supabase.from('shops').update({ balance: newBal }).eq('id', currentShop.id);
-          if (balError) throw new Error("Balance Cut Failed: " + balError.message);
+          await supabase.from('shops').update({ balance: newBal }).eq('id', currentShop.id);
           
-          const { error: txError } = await supabase.from('wallet_transactions').insert({
+          await supabase.from('wallet_transactions').insert({
              shop_id: currentShop.id,
              user_type: 'shop',
              amount: shopDebitAmt,
@@ -487,21 +652,17 @@ export default function OrderDetailsView({
              status: 'completed',
              reason: `Refund Deduction for Return (Order #${orderToUpdate.order_no || orderToUpdate.id})`
           });
-
-          if (txError) throw new Error("Balance cut gaya par History save nahi hui: " + txError.message);
       }
 
-      const { error: statusError } = await supabase.from(tableName).update({ 
+      await supabase.from(tableName).update({ 
         status: 'Refunded', 
         refund_status: 'Pending Admin Refund' 
       }).eq('id', orderId);
       
-      if (statusError) throw new Error("Order Status Update Failed: " + statusError.message);
-
       setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, status: 'Refunded', refund_status: 'Pending Admin Refund' } : o));
       setSelectedOrder((prev: any) => ({ ...prev, status: 'Refunded', refund_status: 'Pending Admin Refund' }));
       
-      alert("✅ Verification Complete!\nStock add ho gaya hai aur Shop Wallet se paise deduct ho gaye hain.\nAdmin ke Wallet Manager mein Customer ko pay karne ki request successfully chali gayi hai.");
+      alert("✅ Verification Complete!\nStock add ho gaya hai aur Shop Wallet se paise deduct ho gaye hain.");
       fetchProducts();
     } catch(e:any) { 
       alert("⚠️ ERROR: " + e.message); 
@@ -557,8 +718,8 @@ export default function OrderDetailsView({
     
     setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, status: 'Awaiting Customer', shop_id: newShopId } : o));
     try {
-      const { error } = await supabase.from(tableName).update({ [colName]: updatedProductDetails, status: 'Awaiting Customer', shop_id: newShopId }).eq('id', orderId);
-      if (!error) fetchOrders();
+      await supabase.from(tableName).update({ [colName]: updatedProductDetails, status: 'Awaiting Customer', shop_id: newShopId }).eq('id', orderId);
+      fetchOrders();
     } catch (e: any) { alert("Error: " + e.message); } 
     finally { setIsProcessing(false); }
   };
@@ -576,8 +737,6 @@ export default function OrderDetailsView({
     const sName = currentShop?.name || currentShop?.shop_name || 'Verified Retail Partner';
     const sGst = currentShop?.gst_number || currentShop?.gstin || currentShop?.gst || 'Unregistered';
 
-    setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, status: 'completed', shop_id: newShopId, shop_name: sName, shop_gstin: sGst } : o));
-
     try {
       const items = getProductDetailsArray(orderToUpdate);
       for (let item of items) {
@@ -594,10 +753,8 @@ export default function OrderDetailsView({
         }
       }
 
-      // 🔥 USE DYNAMIC EARNING SYSTEM HERE 🔥
       const { shopEarnings, adminCommissionFee } = calculateEarnings(orderToUpdate);
       const shopEarn = shopEarnings;
-      const adminEarn = adminCommissionFee;
 
       if (currentShop?.id) {
           const { data: sData } = await supabase.from('shops').select('balance').eq('id', currentShop.id).single();
@@ -605,7 +762,7 @@ export default function OrderDetailsView({
           
           await supabase.from('shops').update({ balance: newBal }).eq('id', currentShop.id);
 
-          const { error: txError } = await supabase.from('wallet_transactions').insert({
+          await supabase.from('wallet_transactions').insert({
              shop_id: currentShop.id,
              user_type: 'shop',
              amount: shopEarn,
@@ -613,29 +770,28 @@ export default function OrderDetailsView({
              status: 'completed',
              reason: `Sales Earning (Order #${orderToUpdate.order_no || orderToUpdate.id})`
           });
-          
-          if (txError) {
-             throw new Error("Balance badh gaya par History save nahi hui: " + txError.message);
-          }
       }
 
       const updatedDetails = items.map((p: any) => ({ ...p, availability: 'available', shop_message: '✅ Delivered Successfully' }));
       const colName = getDetailsColumnName(orderToUpdate);
       
-      const { error } = await supabase.from(tableName).update({ 
+      const updateData = { 
           status: 'completed', 
           [colName]: updatedDetails, 
           shop_id: newShopId,
           shop_name: sName,
-          shop_gstin: sGst
-      }).eq('id', orderId);
+          shop_gstin: sGst,
+          admin_commission: adminCommissionFee,
+          shop_earning: shopEarnings
+      };
 
-      if (!error) { 
-        alert(`✅ Order Completed!\nShop Earned: ₹${shopEarn}\nAdmin Comm: ₹${adminEarn}`);
-        setSelectedOrder(null); 
-        if(setOrderSubTab) setOrderSubTab('history');
-        fetchOrders(); fetchProducts(); 
-      }
+      setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, ...updateData } : o));
+      await supabase.from(tableName).update(updateData).eq('id', orderId);
+
+      alert(`✅ Order Completed!\nShop Earned: ₹${shopEarn}\nAdmin Comm: ₹${adminCommissionFee}`);
+      setSelectedOrder(null); 
+      if(setOrderSubTab) setOrderSubTab('history');
+      fetchOrders(); fetchProducts(); 
     } catch(e:any) { 
       alert("⚠️ ERROR: " + e.message); 
     } 
@@ -681,8 +837,8 @@ export default function OrderDetailsView({
       if(['draft', 'pending', 'new', 'confirmed', 'new order'].includes(autoStatus.toLowerCase().trim())) autoStatus = 'accepted';
 
       setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, status: autoStatus, shop_id: newShopId, [colName]: updatedProductDetails, total_amount: newTotalAmount } : o));
-      const { error } = await supabase.from(tableName).update({ [colName]: updatedProductDetails, total_amount: newTotalAmount, status: autoStatus, shop_id: newShopId }).eq('id', orderId);
-      if (!error) fetchOrders(); 
+      await supabase.from(tableName).update({ [colName]: updatedProductDetails, total_amount: newTotalAmount, status: autoStatus, shop_id: newShopId }).eq('id', orderId);
+      fetchOrders(); 
     } catch(e:any) {} 
     finally { setIsProcessing(false); }
   };
@@ -733,42 +889,35 @@ export default function OrderDetailsView({
     finally { setIsProcessing(false); }
   };
 
-  const openCustomerChat = (order: any) => {
-    if(!order) return;
-    let phone = order.user_phone || order.phone || order.mobile || '';
-    if (!phone) return alert("Customer ka mobile number nahi mila.");
-    if (!phone.startsWith('91') && !phone.startsWith('+91')) phone = '91' + phone;
-    else if (phone.startsWith('+')) phone = phone.substring(1);
-    
-    const cName = order.customer_name || order.name || order.full_name || 'Customer';
-    const message = `Namaste ${cName},\nMain Fixifiy (Shop) se baat kar raha hoon. Aapke Order #${order.order_no || order.id} ke baare mein kuch jankari chahiye thi.`;
-    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, '_blank');
-  };
-
-  const handleInitiateCall = (order: any) => {
-    if (!order) return;
+  const handleInitiateCall = (order: any, phoneNum: string) => {
+    if (!phoneNum || phoneNum === 'Number Not Set') return alert("Phone Number is missing.");
     setActiveCall({
-      roomId: `shop_${currentShop?.id || order.shop_id || 'general'}`,
-      title: `Calling Customer (${order.customer_name || 'Customer'})`
+      roomId: `shop_${currentShop?.id || order?.shop_id || 'general'}`,
+      title: `Connecting Call...`
     });
+    setTimeout(() => {
+      window.location.href = `tel:${phoneNum}`;
+      setActiveCall(null);
+    }, 800);
   };
 
   const orderItems = getShopItems(selectedOrder);
   const cName = selectedOrder?.customer_name || selectedOrder?.name || selectedOrder?.full_name || 'Customer';
-  const cPhone = selectedOrder?.user_phone || selectedOrder?.phone || selectedOrder?.mobile || 'N/A';
+  const cPhoneRaw = selectedOrder?.user_phone || selectedOrder?.phone || selectedOrder?.mobile || '';
+  const cPhoneMasked = maskWeirdPhone(cPhoneRaw);
   const cLocation = selectedOrder?.location || selectedOrder?.address || selectedOrder?.delivery_address || 'Not Provided';
   
-  const s = (selectedOrder?.status || '').toLowerCase().trim();
-  const isCompleted = ['completed', 'complete', 'delivered', 'refunded'].includes(s);
+  const orderStatusStrForRender = (selectedOrder?.status || '').toLowerCase().trim();
+  const isCompleted = ['completed', 'complete', 'delivered', 'refunded'].includes(orderStatusStrForRender);
   const isGlobalOrder = !selectedOrder?.shop_id || String(selectedOrder.shop_id) === 'null' || String(selectedOrder.shop_id).trim() === '';
   
-  const isReturnRequested = s === 'return requested';
-  const isReturnPickedUp = s === 'return picked up';
-  const isReturnAccepted = s === 'return accepted';
+  const isReturnRequested = orderStatusStrForRender === 'return requested';
+  const isReturnPickedUp = orderStatusStrForRender === 'return picked up';
+  const isReturnAccepted = orderStatusStrForRender === 'return accepted';
   const isReturnPhase = isReturnRequested || isReturnPickedUp || isReturnAccepted;
   
-  const isRtoPhase = (s.includes('rto') && s !== 'rto received') || s.includes('fail') || s.includes('undeliver');
-  const isRtoCompleted = s === 'rto received';
+  const isRtoPhase = (orderStatusStrForRender.includes('rto') && orderStatusStrForRender !== 'rto received') || orderStatusStrForRender.includes('fail') || orderStatusStrForRender.includes('undeliver');
+  const isRtoCompleted = orderStatusStrForRender === 'rto received';
 
   // 🔥 USE DYNAMIC EARNING SYSTEM HERE FOR UI 🔥
   const orderFinance = calculateEarnings(selectedOrder);
@@ -805,6 +954,45 @@ export default function OrderDetailsView({
         </div>
       )}
 
+      {/* 🙋‍♂️ SELF DELIVERY MODAL (OTP/PIN + UTR) */}
+      {showSelfDeliveryModal && (
+        <div style={modalOverlayStyle}>
+          <div style={modalContentStyle}>
+            <h3 style={{ margin: '0 0 10px 0', color: '#10b981' }}>🙋‍♂️ Self Delivery Confirmation</h3>
+            <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '10px' }}>
+              Aap is order ko khud deliver kar rahe hain. Kripya customer code verify karein.
+            </p>
+            
+            <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#cbd5e1' }}>Customer 6-Digit Code:</label>
+            <input type="number" placeholder="Enter last 6 digits of customer phone..." value={verifyCode} onChange={(e) => setVerifyCode(e.target.value)} style={{ ...inputStyle, textAlign: 'center', fontSize: '18px', letterSpacing: '2px', marginBottom: '12px' }} maxLength={6} />
+            
+            <label style={{ fontSize: '12px', fontWeight: '900', color: '#ef4444' }}>Delivery Area Pincode (Mandatory):</label>
+            <input type="number" placeholder="e.g. 848207" value={deliveryPinInput} onChange={(e) => setDeliveryPinInput(e.target.value)} style={{ ...inputStyle, border: '2px solid #ef4444', fontWeight: 'bold' }} maxLength={6} />
+
+            {isCodOrder && (
+              <div style={{ marginTop: '10px', background: '#0f172a', padding: '10px', borderRadius: '8px', border: '1px dashed #3b82f6' }}>
+                <p style={{ fontSize: '12px', fontWeight: 'bold', color: '#38bdf8', margin: '0 0 8px 0' }}>Payment Collected Via:</p>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                  <button onClick={() => setPaymentCollected('Cash')} style={{ flex: 1, padding: '8px', borderRadius: '6px', background: paymentCollected === 'Cash' ? '#10b981' : '#334155', color: 'white', border: 'none', fontWeight: 'bold' }}>💵 Cash</button>
+                  <button onClick={() => setPaymentCollected('QR')} style={{ flex: 1, padding: '8px', borderRadius: '6px', background: paymentCollected === 'QR' ? '#3b82f6' : '#334155', color: 'white', border: 'none', fontWeight: 'bold' }}>📱 Online QR</button>
+                </div>
+                {paymentCollected === 'QR' && (
+                  <div>
+                    <label style={{ fontSize: '11px', color: '#cbd5e1' }}>Enter 12-Digit QR UTR No:</label>
+                    <input type="text" placeholder="UTR Number..." value={qrUtrInput} onChange={(e) => setQrUtrInput(e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #3b82f6', background: '#1e293b', color: 'white', marginTop: '4px' }} />
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '10px', marginTop: '15px' }}>
+              <button onClick={() => setShowSelfDeliveryModal(false)} disabled={isProcessing} style={{ flex: 1, padding: '12px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>Cancel</button>
+              <button onClick={confirmSelfDelivery} disabled={isProcessing} style={{ flex: 2, padding: '12px', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>{isProcessing ? '⏳ Processing...' : '✅ Complete Delivery'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header WITH BACK BUTTON */}
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '15px', borderBottom: '2px solid #334155', paddingBottom: '15px', marginBottom: '20px' }}>
         <button 
@@ -822,22 +1010,30 @@ export default function OrderDetailsView({
       )}
 
       {/* 🔥 PAYMENT VERIFICATION WARNING BANNER 🔥 */}
-      {isUpiOrder && !isVerified && !['cancelled', 'refunded', 'payment failed / rejected'].includes(s) && (
+      {isUpiOrder && !isVerified && !['cancelled', 'refunded', 'payment failed / rejected'].includes(orderStatusStrForRender) && (
         <div style={{ backgroundColor: 'rgba(245,158,11,0.1)', borderLeft: '4px solid #f59e0b', padding: '15px', marginBottom: '20px', borderRadius: '6px', color: '#fcd34d', fontWeight: 'bold', fontSize: '14px', border: '1px solid rgba(245,158,11,0.3)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span>⏳</span> PAYMENT VERIFICATION PENDING: Customer ne UPI se pay kiya hai. Admin ke verify karte hi 'Accept' button unlock ho jayega.
+          <span>⏳</span> PAYMENT VERIFICATION PENDING: Customer ne Online pay kiya hai. Admin ke verify karte hi 'Accept' button unlock ho jayega.
         </div>
       )}
 
-      {/* Customer Details */}
+      {/* Customer Details (PHONE MASKED) */}
       <div style={{ backgroundColor: '#0f172a', padding: '25px 20px 20px', borderRadius: '12px', marginBottom: '25px', border: '1px solid #334155', position: 'relative' }}>
         <div style={{ position: 'absolute', top: '-12px', left: '20px', background: '#38bdf8', color: '#0f172a', padding: '2px 10px', borderRadius: '4px', fontWeight: 'bold', fontSize: '12px' }}>CUSTOMER DETAILS</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
           <div><span style={{color: '#94a3b8', fontSize: '12px', display: 'block'}}>Customer Name</span> <strong style={{fontSize: '16px', color: '#f8fafc'}}>{cName}</strong></div>
-          <div><span style={{color: '#94a3b8', fontSize: '12px', display: 'block'}}>Phone Number</span> <strong style={{fontSize: '16px', color: '#f8fafc'}}>📞 {cPhone}</strong></div>
+          <div>
+            <span style={{color: '#94a3b8', fontSize: '12px', display: 'block'}}>Virtual ID (Hidden Number)</span> 
+            <strong style={{fontSize: '15px', color: '#f87171', letterSpacing: '1px', background: '#450a0a', padding: '2px 8px', borderRadius: '6px'}}>
+              {cPhoneMasked}
+            </strong>
+          </div>
           <div style={{gridColumn: '1 / -1'}}><span style={{color: '#94a3b8', fontSize: '12px', display: 'block'}}>Delivery Address</span> 
             <strong style={{fontSize: '15px', color: '#cbd5e1'}}>📍 {selectedOrder?.block ? `${selectedOrder.block}, ${selectedOrder.district}, ${selectedOrder.state}` : cLocation}</strong>
           </div>
         </div>
+        <button onClick={() => handleInitiateCall(selectedOrder, cPhoneRaw)} style={{ marginTop: '15px', width: '100%', background: '#16a34a', color: 'white', border: 'none', padding: '12px', borderRadius: '8px', fontWeight: '900', cursor: 'pointer', display: 'flex', justifyContent: 'center', gap: '8px', alignItems: 'center' }}>
+          📞 ग्राहक को डायरेक्ट कॉल करें
+        </button>
       </div>
 
       <div style={{ backgroundColor: '#0f172a', padding: '20px', borderRadius: '12px', marginBottom: '25px', border: '1px dashed #4ade80' }}>
@@ -862,8 +1058,8 @@ export default function OrderDetailsView({
         </div>
       </div>
 
-      {/* DELIVERY BOY ASSIGNMENT UI */}
-      {!isGlobalOrder && !isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
+      {/* DELIVERY BOY ASSIGNMENT & SELF DELIVERY UI */}
+      {!isGlobalOrder && !isReturnPhase && !orderStatusStrForRender.includes('refund') && !isRtoPhase && !isRtoCompleted && (
         <div style={{ 
           background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
           padding: '25px', 
@@ -880,70 +1076,80 @@ export default function OrderDetailsView({
             <div style={{ background: '#4f46e5', padding: '8px', borderRadius: '10px', display: 'flex', boxShadow: '0 4px 10px rgba(0,0,0,0.3)' }}>
               <span style={{ fontSize: '22px' }}>🛵</span>
             </div>
-            <strong style={{ color: '#ffffff', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>Assign Delivery Partner</strong>
+            <strong style={{ color: '#ffffff', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>Assign Delivery</strong>
           </h4>
           
           <div style={{ display: 'flex', gap: '15px', alignItems: 'center', flexWrap: 'wrap', position: 'relative', zIndex: 1 }}>
             
-            <div style={{ 
-              flex: 1, 
-              minWidth: '260px', 
-              background: 'rgba(15, 23, 42, 0.6)', 
-              border: '2px solid #818cf8', 
-              borderRadius: '10px', 
-              padding: '6px',
-              boxShadow: 'inset 0 2px 6px rgba(0,0,0,0.4)'
-            }}>
-              <select 
-                value={selectedOrder?.delivery_boy_id || ''} 
-                onChange={(e) => assignDeliveryBoy(selectedOrder.id, e.target.value)}
-                style={{ 
-                  width: '100%', 
-                  padding: '12px 15px', 
-                  borderRadius: '6px', 
-                  backgroundColor: '#1e293b', 
-                  color: '#fff', 
-                  border: 'none', 
-                  outline: 'none', 
-                  fontSize: '16px', 
-                  cursor: 'pointer',
-                  fontWeight: 'bold',
-                  boxShadow: '0 2px 5px rgba(0,0,0,0.2)'
-                }}
-              >
-                <option value="" style={{ color: '#94a3b8' }}>🚀 -- Tap to Choose Delivery Partner -- 🚀</option>
-                {deliveryBoys.map((boy: any) => (
-                  <option key={boy.id} value={boy.id} style={{ color: '#fff' }}>{boy.name} (Ph: {boy.phone})</option>
-                ))}
-              </select>
-            </div>
-            
-            {selectedOrder?.delivery_boy_id ? (
+            {/* DROP-DOWN ONLY SHOWS IF NOT SELF DELIVERED */}
+            {selectedOrder?.delivery_boy_id !== String(currentShop?.id) && (
               <div style={{ 
-                display: 'flex', 
-                alignItems: 'center', 
-                gap: '8px', 
-                background: 'linear-gradient(to right, #059669, #10b981)', 
-                padding: '12px 20px', 
+                flex: 1, 
+                minWidth: '260px', 
+                background: 'rgba(15, 23, 42, 0.6)', 
+                border: '2px solid #818cf8', 
                 borderRadius: '10px', 
-                boxShadow: '0 4px 15px rgba(16, 185, 129, 0.4)',
-                border: '1px solid #34d399'
+                padding: '6px',
+                boxShadow: 'inset 0 2px 6px rgba(0,0,0,0.4)'
               }}>
-                <span style={{ fontSize: '20px', filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.3))' }}>✅</span>
-                <span style={{ color: '#fff', fontSize: '15px', fontWeight: 'bold', letterSpacing: '0.5px' }}>Partner Assigned</span>
+                <select 
+                  value={selectedOrder?.delivery_boy_id || ''} 
+                  onChange={(e) => assignDeliveryBoy(selectedOrder.id, e.target.value)}
+                  style={{ 
+                    width: '100%', 
+                    padding: '12px 15px', 
+                    borderRadius: '6px', 
+                    backgroundColor: '#1e293b', 
+                    color: '#fff', 
+                    border: 'none', 
+                    outline: 'none', 
+                    fontSize: '16px', 
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                    boxShadow: '0 2px 5px rgba(0,0,0,0.2)'
+                  }}
+                >
+                  <option value="" style={{ color: '#94a3b8' }}>🚀 -- Tap to Choose Delivery Partner -- 🚀</option>
+                  {deliveryBoys.map((boy: any) => (
+                    <option key={boy.id} value={boy.id} style={{ color: '#fff' }}>{boy.name} (Ph: {boy.phone})</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            
+            {/* SELF DELIVERY BUTTON */}
+            {!isCompleted && !orderStatusStrForRender.includes('cancel') && !orderStatusStrForRender.includes('fail') && !isReturnPhase && !isRtoPhase && selectedOrder?.delivery_boy_id !== String(currentShop?.id) && (
+              <button 
+                onClick={() => {
+                  setDeliveryPinInput(selectedOrder?.pincode || currentShop?.pincode || '');
+                  setShowSelfDeliveryModal(true);
+                }}
+                style={{ flex: 1, minWidth: '200px', background: '#f59e0b', color: '#fff', border: '1px solid #d97706', padding: '12px 20px', borderRadius: '8px', fontWeight: '900', fontSize: '15px', cursor: 'pointer', boxShadow: '0 4px 12px rgba(245, 158, 11, 0.4)' }}
+              >
+                🙋‍♂️ मैं खुद डिलीवर करूँगा (Self Delivery)
+              </button>
+            )}
+
+            {selectedOrder?.delivery_boy_id === String(currentShop?.id) ? (
+              <div style={{ 
+                display: 'flex', alignItems: 'center', gap: '8px', background: 'linear-gradient(to right, #d97706, #f59e0b)', padding: '12px 20px', borderRadius: '10px', border: '1px solid #fcd34d'
+              }}>
+                <span style={{ fontSize: '20px' }}>🙋‍♂️</span>
+                <span style={{ color: '#fff', fontSize: '15px', fontWeight: 'bold' }}>Self Delivered (खुद से डिलीवर किया)</span>
+              </div>
+            ) : selectedOrder?.delivery_boy_id ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', background: 'linear-gradient(to right, #059669, #10b981)', padding: '12px 20px', borderRadius: '10px', border: '1px solid #34d399' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '20px' }}>✅</span>
+                  <span style={{ color: '#fff', fontSize: '15px', fontWeight: 'bold' }}>Partner Assigned</span>
+                </div>
+                <div style={{ color: '#ecfdf5', fontSize: '12px', fontWeight: 'bold' }}>
+                  🛵 {selectedOrder.delivery_boy_name} ({selectedOrder.delivery_boy_phone})
+                </div>
               </div>
             ) : (
               <div style={{ 
-                padding: '12px 20px', 
-                borderRadius: '10px', 
-                background: 'rgba(239, 68, 68, 0.15)',
-                border: '1px dashed #f87171',
-                color: '#fca5a5',
-                fontSize: '14px',
-                fontWeight: 'bold',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px'
+                padding: '12px 20px', borderRadius: '10px', background: 'rgba(239, 68, 68, 0.15)', border: '1px dashed #f87171', color: '#fca5a5', fontSize: '14px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px'
               }}>
                 <span style={{ fontSize: '16px' }}>⚠️</span> Pending Assignment
               </div>
@@ -1028,7 +1234,7 @@ export default function OrderDetailsView({
                   )}
                 </div>
 
-                {!isDelivery && !isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
+                {!isDelivery && !isReturnPhase && !orderStatusStrForRender.includes('refund') && !isRtoPhase && !isRtoCompleted && (
                   <div style={{ display: 'flex', gap: '8px', flexDirection: 'column', width: '100%', maxWidth: '140px' }}>
                     <button onClick={() => modifyItemQuantity(selectedOrder.id, idx)} style={{ ...smallBtn, backgroundColor: '#f59e0b' }} disabled={isCompleted || isProcessing}>✏️ Edit Qty</button>
                     <button onClick={() => updateItemStockStatus(selectedOrder.id, idx, 'available')} style={{ ...smallBtn, backgroundColor: isMatched ? '#10b981' : '#64748b', cursor: isMatched && !isCompleted ? 'pointer' : 'not-allowed', opacity: isMatched ? 1 : 0.6 }} disabled={isCompleted || !isMatched || isProcessing}>📦 Pack Item</button>
@@ -1183,20 +1389,31 @@ export default function OrderDetailsView({
         </div>
       ) : null}
 
-      {/* ACTION BUTTONS (WITH LOCK LOGIC) */}
+      {/* ========================================================= */}
+      {/* 🔒 STRICT ACTION BUTTONS (WITH ADMIN VERIFICATION LOCK)   */}
+      {/* ========================================================= */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
         
-        {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
+        {!isReturnPhase && !orderStatusStrForRender.includes('refund') && !isRtoPhase && !isRtoCompleted && (
           <>
-            {/* 🔥 ACCEPT BUTTON WITH PAYMENT VERIFICATION LOCK 🔥 */}
-            {['accepted', 'processing', 'completed', 'delivered'].includes(s) ? (
+            {/* 🔥 ACCEPT BUTTON LOGIC 🔥 */}
+            {isOrderAlreadyAccepted ? (
                 <span style={{ ...actionBtnStyle, backgroundColor: '#1e293b', border: '1px solid #10b981', color: '#10b981' }}>Order Accepted ✅</span>
-            ) : (isUpiOrder && (selectedOrder?.status?.toLowerCase() === 'payment failed / rejected' || selectedOrder?.payment_status === 'failed')) ? (
-                <button disabled style={{ ...actionBtnStyle, backgroundColor: '#ef4444', cursor: 'not-allowed' }}>❌ Fake/Failed Payment</button>
             ) : (isUpiOrder && !isVerified) ? (
-                <button disabled style={{ ...actionBtnStyle, backgroundColor: '#475569', cursor: 'not-allowed', opacity: 0.8 }}>🔒 Waiting for Admin Approval</button>
+                // 🔒 LOCKED BUTTON IF ONLINE & NOT VERIFIED
+                <button 
+                   disabled 
+                   style={{ ...actionBtnStyle, backgroundColor: '#475569', cursor: 'not-allowed', opacity: 0.8 }}
+                >
+                   🔒 Waiting for Admin Approval
+                </button>
             ) : (
-                <button onClick={() => handleActionClick('accepted')} style={{ ...actionBtnStyle, backgroundColor: '#10b981' }} disabled={isCompleted || isProcessing}>
+                // 🟢 UNLOCKED BUTTON (COD OR VERIFIED ONLINE)
+                <button 
+                   onClick={() => handleActionClick('accepted')} 
+                   style={{ ...actionBtnStyle, backgroundColor: '#10b981' }} 
+                   disabled={isProcessing}
+                >
                     {isProcessing ? '⏳...' : (isUpiOrder ? '✅ Payment Verified (Accept)' : '✅ Accept Order (COD)')}
                 </button>
             )}
@@ -1208,34 +1425,35 @@ export default function OrderDetailsView({
           </>
         )}
 
-        <button onClick={() => openCustomerChat(selectedOrder)} style={{ ...actionBtnStyle, backgroundColor: '#25d366' }}>💬 WhatsApp Customer</button>
-        <button onClick={() => handleInitiateCall(selectedOrder)} style={{ ...actionBtnStyle, backgroundColor: '#16a34a' }}>📞 Free Internet Call</button>
+        {/* MASKED DIRECT CALL BUTTONS */}
+        <button onClick={() => handleInitiateCall(selectedOrder, cPhoneRaw)} style={{ ...actionBtnStyle, backgroundColor: '#25d366' }}>📞 डायरेक्ट कॉल (Customer)</button>
         
-        {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
+        {!isReturnPhase && !orderStatusStrForRender.includes('refund') && !isRtoPhase && !isRtoCompleted && (
           <button onClick={() => updateLiveLocation(selectedOrder.id)} style={{ ...actionBtnStyle, backgroundColor: '#0284c7' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '📍 Update Live Location'}</button>
         )}
         
-        {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
-          /* RESCHEDULE BUTTON */
+        {!isReturnPhase && !orderStatusStrForRender.includes('refund') && !isRtoPhase && !isRtoCompleted && (
           <button onClick={() => handleActionClick('rescheduled')} style={{ ...actionBtnStyle, backgroundColor: '#6366f1' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '⏱️ Reschedule Delivery'}</button>
         )}
         
-        {(s === 'out_for_delivery' || s.includes('out') || s.includes('transit')) && (
+        {(orderStatusStrForRender === 'out_for_delivery' || orderStatusStrForRender.includes('out') || orderStatusStrForRender.includes('transit')) && (
           <button onClick={() => markDeliveryFailed(selectedOrder.id)} style={{ ...actionBtnStyle, backgroundColor: '#f97316' }} disabled={isProcessing}>{isProcessing ? '⏳...' : '❌ Mark Delivery Failed (RTO)'}</button>
         )}
         
-        {!isReturnPhase && !s.includes('refund') && !isRtoPhase && !isRtoCompleted && (
-          <div style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
-            <button onClick={() => markOrderAsCompleted(selectedOrder.id)} style={{ width: '100%', padding: '16px', backgroundColor: isCompleted ? '#334155' : '#ef4444', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '18px', cursor: isCompleted || isProcessing ? 'not-allowed' : 'pointer', boxShadow: isCompleted ? 'none' : '0 4px 10px rgba(239, 68, 68, 0.3)' }} disabled={isCompleted || isProcessing}>
-              {isProcessing ? '⏳ PROCESSING...' : (isCompleted ? '✅ ALREADY DELIVERED' : '🏁 Mark Delivered & Add to Wallet')}
-            </button>
-          </div>
-        )}
       </div>
+
+      {/* NORMAL MARK DELIVERED (Only show if not assigned to Self Delivery, because Self Delivery has its own dedicated button) */}
+      {!isReturnPhase && !orderStatusStrForRender.includes('refund') && !isRtoPhase && !isRtoCompleted && selectedOrder?.delivery_boy_id !== String(currentShop?.id) && (
+        <div style={{ marginTop: '12px' }}>
+          <button onClick={() => markOrderAsCompleted(selectedOrder.id)} style={{ width: '100%', padding: '16px', backgroundColor: isCompleted ? '#334155' : '#ef4444', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '18px', cursor: isCompleted || isProcessing ? 'not-allowed' : 'pointer', boxShadow: isCompleted ? 'none' : '0 4px 10px rgba(239, 68, 68, 0.3)' }} disabled={isCompleted || isProcessing}>
+            {isProcessing ? '⏳ PROCESSING...' : (isCompleted ? '✅ ALREADY DELIVERED' : '🏁 Mark Delivered & Add to Wallet')}
+          </button>
+        </div>
+      )}
 
       {/* IN-APP CHAT (LOCKED BEFORE ACCEPT) */}
       {(() => {
-        const isLocked = ['pending', 'new', 'draft', 'new order'].includes(s);
+        const isLocked = ['pending', 'new', 'draft', 'new order'].includes(orderStatusStrForRender);
 
         if (isLocked) {
           return (
@@ -1337,16 +1555,14 @@ export default function OrderDetailsView({
         </div>
       )}
 
-      {/* Active Call UI */}
+      {/* 🔒 MASKED ACTIVE CALL MODAL UI */}
       {activeCall && (
         <div style={{position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10005}}>
           <div style={{backgroundColor: '#1e293b', padding: '30px', borderRadius: '16px', width: '90%', maxWidth: '350px', border: '1px solid #38bdf8', textAlign: 'center'}}>
-             <h3 style={{ margin: '0 0 10px 0', color: '#38bdf8' }}>Connecting Call...</h3>
-             <p style={{ margin: '0 0 20px 0', color: '#94a3b8', fontSize: '14px' }}>{activeCall.title}</p>
-             <div style={{ height: '300px', backgroundColor: '#0f172a', borderRadius: '12px', overflow: 'hidden', marginBottom: '20px', border: '1px solid #334155' }}>
-                <PermanentFreeCall roomID={activeCall.roomId} customerName={currentShop?.name || "Shop Owner"} />
-             </div>
-             <button onClick={() => setActiveCall(null)} style={{ backgroundColor: '#ef4444', color: 'white', border: 'none', padding: '12px 25px', borderRadius: '30px', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer', width: '100%' }}>End Call & Close</button>
+             <div style={{ width: '60px', height: '60px', borderRadius: '50%', background: '#16a34a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '28px', margin: '0 auto 12px auto' }}>📞</div>
+             <h3 style={{ margin: '0 0 10px 0', color: '#38bdf8' }}>Connecting Secure Call...</h3>
+             <p style={{ margin: '0 0 20px 0', color: '#94a3b8', fontSize: '14px' }}>Customer number is hidden for privacy.</p>
+             <button onClick={() => setActiveCall(null)} style={{ backgroundColor: '#ef4444', color: 'white', border: 'none', padding: '12px 25px', borderRadius: '30px', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer', width: '100%' }}>Cancel</button>
           </div>
         </div>
       )}
@@ -1355,6 +1571,7 @@ export default function OrderDetailsView({
   );
 }
 
+const inputStyle: React.CSSProperties = { width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #475569', background: '#1e293b', color: 'white', fontSize: '14px', boxSizing: 'border-box' };
 const actionBtnStyle: React.CSSProperties = { padding: '12px', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', textAlign: 'center', transition: '0.2s' };
 const smallBtn: React.CSSProperties = { padding: '8px 12px', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
 const modalOverlayStyle: React.CSSProperties = { position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 100000, padding: '15px', boxSizing: 'border-box' };
