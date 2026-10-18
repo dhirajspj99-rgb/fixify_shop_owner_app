@@ -46,6 +46,10 @@ export default function CounterBillingTab({
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [cart, setCart] = useState<any[]>([]);
 
+  // 🔥 LIVE SYNCED STOCK STATE FROM SUPABASE `products` TABLE 🔥
+  const [liveDbProducts, setLiveDbProducts] = useState<any[]>([]);
+  const [isSyncingStock, setIsSyncingStock] = useState<boolean>(false);
+
   // Local Stock Override Map so UI immediately reflects deducted stock after sale
   const [localStockOverrides, setLocalStockOverrides] = useState<Record<string, number>>({});
 
@@ -85,7 +89,7 @@ export default function CounterBillingTab({
   const [customItemQty, setCustomItemQty] = useState('1');
   const [customItemUnit, setCustomItemUnit] = useState('Pcs');
 
-  // Shop Owner UPI ID for Bill QR Code
+  // Shop Owner UPI ID for Bill QR Code (Strictly Shop Owner Profile UPI)
   const [shopUpiId, setShopUpiId] = useState('');
   const [isEditingUpi, setIsEditingUpi] = useState(false);
 
@@ -110,16 +114,53 @@ export default function CounterBillingTab({
   const [filterPincode, setFilterPincode] = useState(currentShop?.pincode || '');
   const [selectedOrderForAssign, setSelectedOrderForAssign] = useState<string>('');
 
+  // Helper to extract Shop Owner's own UPI from profile object
+  const extractProfileShopUpi = (shopObj: any): string => {
+    if (!shopObj) return '';
+    const candidate =
+      shopObj.upi_id ||
+      shopObj.upi ||
+      shopObj.shop_upi ||
+      shopObj.payment_upi ||
+      shopObj.owner_upi ||
+      '';
+    const trimmed = String(candidate).trim();
+    return trimmed.includes('@') ? trimmed : '';
+  };
+
+  // 🔥 DIRECT SUPABASE STOCK FETCHER (ENSURES REAL `total_stock` IS ALWAYS LOADED) 🔥
+  const fetchLiveShopStockFromDb = async () => {
+    if (!currentShop?.id) return;
+    setIsSyncingStock(true);
+    try {
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .eq('shop_id', currentShop.id)
+        .order('id', { ascending: false });
+
+      if (!error && data) {
+        setLiveDbProducts(data);
+        setLocalStockOverrides({});
+      }
+    } catch (err) {
+      console.warn('Stock sync error:', err);
+    } finally {
+      setIsSyncingStock(false);
+    }
+  };
+
   useEffect(() => {
     fetchAdminUpiAndPlanStatus();
     if (currentShop?.id) {
-      const savedUpi =
-        currentShop?.upi_id ||
-        currentShop?.upi ||
-        currentShop?.shop_upi ||
+      fetchLiveShopStockFromDb();
+
+      // Strictly load Shop Owner's own UPI from Shop Profile or localStorage
+      const profileUpi =
+        extractProfileShopUpi(currentShop) ||
         localStorage.getItem(`fixifiy_shop_upi_${currentShop.id}`) ||
         '';
-      setShopUpiId(savedUpi);
+      setShopUpiId(profileUpi.includes('@') ? profileUpi.trim() : '');
 
       const savedGst =
         currentShop?.gst_no ||
@@ -134,16 +175,44 @@ export default function CounterBillingTab({
         const savedLocal = localStorage.getItem(`fixifiy_counter_bills_${currentShop.id}`);
         if (savedLocal) setLocalCounterBills(JSON.parse(savedLocal));
       } catch {}
+
+      // 🔥 REAL-TIME SUPABASE SUBSCRIPTION FOR STOCK CHANGES 🔥
+      const stockChannel = supabase
+        .channel(`pos_stock_sync_${currentShop.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'products',
+            filter: `shop_id=eq.${currentShop.id}`
+          },
+          () => {
+            fetchLiveShopStockFromDb();
+            if (typeof fetchProducts === 'function') fetchProducts();
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(stockChannel);
+      };
     }
     if (mode === 'delivery_partners') {
       fetchAreaDeliveryPartners();
     }
-  }, [currentShop?.id, mode]);
+  }, [currentShop?.id, currentShop?.upi_id, currentShop?.upi, mode]);
 
-  // Clear localStockOverrides when fresh `products` arrive from server
+  // Whenever parent `products` prop updates (e.g. edited in Stock Room Tab), sync immediately
   useEffect(() => {
-    setLocalStockOverrides({});
-  }, [products]);
+    if (Array.isArray(products) && products.length > 0 && currentShop?.id) {
+      const shopItems = products.filter((p: any) => String(p.shop_id) === String(currentShop.id));
+      if (shopItems.length > 0) {
+        setLiveDbProducts(shopItems);
+        setLocalStockOverrides({});
+      }
+    }
+  }, [products, currentShop?.id]);
 
   const playBeepSound = () => {
     try {
@@ -162,12 +231,16 @@ export default function CounterBillingTab({
 
   const saveShopOwnerUpi = async () => {
     const cleanUpi = shopUpiId.trim();
-    if (!cleanUpi.includes('@')) {
+    if (cleanUpi && !cleanUpi.includes('@')) {
       return alert('⚠️ कृपया सही UPI ID डालें (उदाहरण: 9876543210@ybl)');
     }
-    localStorage.setItem(`fixifiy_shop_upi_${currentShop?.id}`, cleanUpi);
+    if (cleanUpi) {
+      localStorage.setItem(`fixifiy_shop_upi_${currentShop?.id}`, cleanUpi);
+    } else {
+      localStorage.removeItem(`fixifiy_shop_upi_${currentShop?.id}`);
+    }
     try {
-      await supabase.from('shops').update({ upi_id: cleanUpi }).eq('id', currentShop.id);
+      await supabase.from('shops').update({ upi_id: cleanUpi || null }).eq('id', currentShop.id);
     } catch {}
     if (setCurrentShop && currentShop) {
       const updated = { ...currentShop, upi_id: cleanUpi };
@@ -175,7 +248,11 @@ export default function CounterBillingTab({
       localStorage.setItem('fixifiy_shop', JSON.stringify(updated));
     }
     setIsEditingUpi(false);
-    alert('✅ आपकी दुकान का UPI ID सेव हो गया! अब लाइव बिल और प्रिंट पर आपका QR कोड दिखेगा।');
+    if (cleanUpi) {
+      alert('✅ आपकी दुकान का UPI ID सेव हो गया! अब काउंटर बिल पर आपका QR कोड दिखेगा।');
+    } else {
+      alert('ℹ️ UPI ID हटा दिया गया है।');
+    }
   };
 
   const saveShopGstNumber = async () => {
@@ -214,9 +291,16 @@ export default function CounterBillingTab({
           .eq('id', currentShop.id)
           .maybeSingle();
 
-        if (freshShop && setCurrentShop) {
-          setCurrentShop((prev: any) => ({ ...prev, ...freshShop }));
-          localStorage.setItem('fixifiy_shop', JSON.stringify({ ...currentShop, ...freshShop }));
+        if (freshShop) {
+          const freshProfileUpi = extractProfileShopUpi(freshShop);
+          if (freshProfileUpi) {
+            setShopUpiId(freshProfileUpi);
+            localStorage.setItem(`fixifiy_shop_upi_${currentShop.id}`, freshProfileUpi);
+          }
+          if (setCurrentShop) {
+            setCurrentShop((prev: any) => ({ ...prev, ...freshShop }));
+            localStorage.setItem('fixifiy_shop', JSON.stringify({ ...currentShop, ...freshShop }));
+          }
         }
 
         const { data: pmData } = await supabase
@@ -396,6 +480,9 @@ export default function CounterBillingTab({
             return extractValidString(parsed.url || parsed.src || parsed.image || parsed.publicUrl);
           } catch {}
         }
+        if (trimmed.includes(',') && (trimmed.startsWith('http') || trimmed.startsWith('/'))) {
+          return trimmed.split(',')[0].trim();
+        }
         return trimmed;
       }
       if (Array.isArray(val) && val.length > 0) {
@@ -408,8 +495,8 @@ export default function CounterBillingTab({
     };
 
     const candidateKeys = [
-      p.image,
       p.image_url,
+      p.image,
       p.img,
       p.photo,
       p.photo_url,
@@ -444,16 +531,39 @@ export default function CounterBillingTab({
   };
 
   // ==========================================
-  // 📦 STRICT IN-STOCK PRODUCTS & LIVE STOCK CALCULATION
+  // 📦 REAL STOCK ROOM CONNECTION (`total_stock` PRIORITY)
   // ==========================================
+  const combinedShopProducts = useMemo(() => {
+    const map = new Map<string, any>();
+    (products || []).forEach((p: any) => {
+      if (String(p.shop_id) === String(currentShop?.id)) {
+        map.set(String(p.id), p);
+      }
+    });
+    liveDbProducts.forEach((p: any) => {
+      if (String(p.shop_id) === String(currentShop?.id)) {
+        map.set(String(p.id), { ...map.get(String(p.id)), ...p });
+      }
+    });
+    return Array.from(map.values());
+  }, [products, liveDbProducts, currentShop?.id]);
+
+  // Strictly read `total_stock` from Stock Room (NO DUMMY 999)
   const getBaseProductStock = (p: any): number => {
     if (!p) return 0;
     if (localStockOverrides[String(p.id)] !== undefined) {
-      return Number(localStockOverrides[String(p.id)]);
+      return Math.max(0, Number(localStockOverrides[String(p.id)]));
     }
-    const raw = p.stock ?? p.quantity ?? p.qty ?? p.available_stock;
-    if (raw === undefined || raw === null || raw === '') return 0;
-    return Number(raw);
+    if (p.total_stock !== undefined && p.total_stock !== null && p.total_stock !== '') {
+      return Math.max(0, Number(p.total_stock));
+    }
+    if (p.stock !== undefined && p.stock !== null && p.stock !== '' && Number(p.stock) !== 999) {
+      return Math.max(0, Number(p.stock));
+    }
+    if (p.quantity !== undefined && p.quantity !== null && p.quantity !== '' && Number(p.quantity) !== 999) {
+      return Math.max(0, Number(p.quantity));
+    }
+    return 0;
   };
 
   const getRemainingStockAfterCart = (p: any): number => {
@@ -463,14 +573,13 @@ export default function CounterBillingTab({
     return Math.max(0, base - cartQty);
   };
 
-  // All products belonging to this shop that have base stock > 0
   const myShopInStockProducts = useMemo(() => {
-    return (products || []).filter((p: any) => {
-      const isMyShop = String(p.shop_id) === String(currentShop?.id);
-      if (!isMyShop) return false;
-      return getBaseProductStock(p) > 0;
+    return combinedShopProducts.sort((a: any, b: any) => {
+      const aStock = getBaseProductStock(a) > 0 ? 1 : 0;
+      const bStock = getBaseProductStock(b) > 0 ? 1 : 0;
+      return bStock - aStock;
     });
-  }, [products, currentShop?.id, localStockOverrides]);
+  }, [combinedShopProducts, localStockOverrides]);
 
   const productCategories = useMemo(() => {
     const cats = new Set<string>(['All']);
@@ -481,7 +590,6 @@ export default function CounterBillingTab({
     return Array.from(cats);
   }, [myShopInStockProducts]);
 
-  // Filtered products: Only show products that have > 0 stock (or are currently in cart)
   const filteredProducts = useMemo(() => {
     return myShopInStockProducts.filter((p: any) => {
       const q = searchQuery.trim().toLowerCase();
@@ -503,12 +611,12 @@ export default function CounterBillingTab({
   const addToCart = (product: any) => {
     const baseStock = getBaseProductStock(product);
     if (baseStock <= 0) {
-      return alert(`❌ "${product.name || product.product_name}" का स्टॉक खत्म (Out of Stock) हो चुका है!`);
+      return alert(`❌ "${product.name || product.product_name}" का स्टॉक खत्म (0 Stock) हो चुका है! कृपया पहले Stock Room में स्टॉक बढ़ाएं।`);
     }
 
     const existing = cart.find(item => String(item.id) === String(product.id));
     if (existing && existing.qty + 1 > baseStock) {
-      return alert(`⚠️ केवल ${baseStock} ${product.unit || 'Pcs'} स्टॉक में उपलब्ध हैं!`);
+      return alert(`⚠️ केवल ${baseStock} ${product.unit || 'Pc'} स्टॉक में उपलब्ध हैं!`);
     }
 
     playBeepSound();
@@ -519,7 +627,7 @@ export default function CounterBillingTab({
           String(item.id) === String(product.id) ? { ...item, qty: item.qty + 1, maxStock: baseStock } : item
         );
       }
-      const price = Number(product.selling_price || product.price || product.rate || 0);
+      const price = Number(product.price || product.selling_price || product.rate || 0);
       return [
         ...prev,
         {
@@ -528,7 +636,7 @@ export default function CounterBillingTab({
           category: product.category || 'General',
           image: getProductImageUrl(product),
           price: price,
-          unit: product.unit || 'Pcs',
+          unit: product.unit || 'Pc',
           qty: 1,
           maxStock: baseStock,
           isCustom: false
@@ -556,7 +664,6 @@ export default function CounterBillingTab({
     const cleaned = String(rawText || '').trim();
     if (!cleaned) return false;
 
-    // Parse if QR contains JSON or "PROD:ID" format
     let candidateId = cleaned;
     if (cleaned.startsWith('{')) {
       try {
@@ -570,7 +677,6 @@ export default function CounterBillingTab({
     const qLower = candidateId.toLowerCase();
     const qRawLower = cleaned.toLowerCase();
 
-    // 1. Exact Match by ID, Code, Barcode, SKU, or Name
     let matchedProd = myShopInStockProducts.find((p: any) => {
       return (
         String(p.id).toLowerCase() === qLower ||
@@ -582,7 +688,6 @@ export default function CounterBillingTab({
       );
     });
 
-    // 2. Partial Match by Name or Description if exact match not found
     if (!matchedProd) {
       matchedProd = myShopInStockProducts.find((p: any) => {
         const nameStr = String(p.name || p.product_name || '').toLowerCase();
@@ -593,7 +698,7 @@ export default function CounterBillingTab({
 
     if (matchedProd) {
       addToCart(matchedProd);
-      setScanStatusMsg(`✅ मिल गया: "${matchedProd.name || matchedProd.product_name}" (₹${matchedProd.selling_price || matchedProd.price}) बिल में जुड़ गया!`);
+      setScanStatusMsg(`✅ मिल गया: "${matchedProd.name || matchedProd.product_name}" (₹${matchedProd.price || matchedProd.selling_price}) बिल में जुड़ गया!`);
       return true;
     } else {
       setSearchQuery(candidateId);
@@ -615,7 +720,6 @@ export default function CounterBillingTab({
         await videoRef.current.play();
       }
 
-      // Use native BarcodeDetector API (supported in Chrome/Edge/Android WebView)
       if ('BarcodeDetector' in window) {
         const Detector = (window as any).BarcodeDetector;
         const detector = new Detector({
@@ -646,7 +750,6 @@ export default function CounterBillingTab({
     }
   };
 
-  // Cleanup camera on unmount
   useEffect(() => {
     return () => {
       if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
@@ -656,11 +759,10 @@ export default function CounterBillingTab({
     };
   }, []);
 
-  // Print Product QR Label Sticker so Shop Owner can stick QR on physical items
   const printProductQrSticker = (prod: any, e: React.MouseEvent) => {
     e.stopPropagation();
     const pName = prod.name || prod.product_name || 'Product';
-    const price = prod.selling_price || prod.price || 0;
+    const price = prod.price || prod.selling_price || 0;
     const qrPayload = `PROD:${prod.code || prod.id}`;
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(qrPayload)}`;
 
@@ -699,7 +801,7 @@ export default function CounterBillingTab({
         price,
         unit: customItemUnit || 'Pcs',
         qty,
-        maxStock: 99999,
+        maxStock: 1000,
         isCustom: true
       }
     ]);
@@ -717,9 +819,13 @@ export default function CounterBillingTab({
     setCart(prev =>
       prev.map(item => {
         if (item.id === id) {
-          if (!item.isCustom && newQty > item.maxStock) {
-            alert(`⚠️ स्टॉक में केवल ${item.maxStock} ${item.unit || 'Pcs'} उपलब्ध है!`);
-            return item;
+          if (!item.isCustom) {
+            const liveProd = combinedShopProducts.find((p: any) => String(p.id) === String(item.id));
+            const currentMax = liveProd ? getBaseProductStock(liveProd) : item.maxStock;
+            if (newQty > currentMax) {
+              alert(`⚠️ स्टॉक रूम में केवल ${currentMax} ${item.unit || 'Pc'} उपलब्ध है!`);
+              return { ...item, maxStock: currentMax };
+            }
           }
           return { ...item, qty: newQty };
         }
@@ -741,17 +847,30 @@ export default function CounterBillingTab({
   const gstAmt = isGstBillEnabled ? Math.round((taxableAmt * activeGstRate) / 100) : 0;
   const grandTotal = Math.round(taxableAmt + gstAmt + labourAmt + transportAmt);
 
-  const getShopOwnerQrData = (amount: number, billNoStr: string) => {
-    const activeUpi = shopUpiId.trim() || currentShop?.upi_id || currentShop?.upi || adminUpi;
+  // ==========================================================
+  // 🔥 STRICT SHOP OWNER UPI QR GENERATOR (NO ADMIN UPI FALLBACK)
+  // ==========================================================
+  const getShopOwnerQrData = (amount: number, billNoStr: string, savedBillUpi?: string) => {
+    const rawUpi = String(
+      savedBillUpi ||
+      shopUpiId.trim() ||
+      extractProfileShopUpi(currentShop) ||
+      ''
+    ).trim();
+
+    if (!rawUpi || !rawUpi.includes('@') || rawUpi.toLowerCase() === 'admin@ybl') {
+      return { activeUpi: '', upiUri: '', qrImg: '' };
+    }
+
     const shopTitle = encodeURIComponent(currentShop?.name || 'Shop');
-    const upiUri = `upi://pay?pa=${activeUpi}&pn=${shopTitle}&am=${amount}&cu=INR&tn=Bill_${billNoStr}`;
+    const upiUri = `upi://pay?pa=${rawUpi}&pn=${shopTitle}&am=${amount}&cu=INR&tn=Bill_${billNoStr}`;
     const qrImg = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(upiUri)}`;
-    return { activeUpi, upiUri, qrImg };
+    return { activeUpi: rawUpi, upiUri, qrImg };
   };
 
-  // ==========================================
-  // 🧾 SAVE COUNTER BILL & DEDUCT STOCK IMMEDIATELY
-  // ==========================================
+  // ==========================================================
+  // 🧾 SAVE COUNTER BILL & DEDUCT `total_stock` + ADD `sold_quantity`
+  // ==========================================================
   const handleGenerateCounterBill = async () => {
     if (cart.length === 0) return alert('❌ कृपया बिल बनाने के लिए बाईं तरफ से कम से कम 1 सामान पर क्लिक करें!');
     const finalCustName = custName.trim() || 'Counter Walk-in Customer';
@@ -763,6 +882,8 @@ export default function CounterBillingTab({
       currentShop?.gstin ||
       (isGstBillEnabled ? '09ABCDE1234F1Z5' : '');
 
+    const verifiedShopUpi = shopUpiId.trim() || extractProfileShopUpi(currentShop) || '';
+
     setIsGeneratingBill(true);
     try {
       const nowIso = new Date().toISOString();
@@ -770,24 +891,61 @@ export default function CounterBillingTab({
 
       const newOverrides: Record<string, number> = { ...localStockOverrides };
 
-      // Deduct Stock in Supabase & Update Local Stock Immediately
+      // 🔥 DEDUCT `total_stock` AND INCREMENT `sold_quantity` IN SUPABASE 🔥
       for (const item of cart) {
         if (!item.isCustom) {
-          const prod = (products || []).find((p: any) => String(p.id) === String(item.id));
-          if (prod) {
-            const currentAvail = getBaseProductStock(prod);
-            const newStock = Math.max(0, currentAvail - Number(item.qty));
-            newOverrides[String(item.id)] = newStock;
+          const { data: freshProd } = await supabase
+            .from('products')
+            .select('id, total_stock, sold_quantity')
+            .eq('id', item.id)
+            .maybeSingle();
 
-            // Update both `stock` and `quantity` columns if present
-            const { error: stErr } = await supabase.from('products').update({ stock: newStock }).eq('id', item.id);
-            if (stErr) {
-              await supabase.from('products').update({ quantity: newStock }).eq('id', item.id);
-            }
+          const fallbackProd = combinedShopProducts.find((p: any) => String(p.id) === String(item.id));
+          const currentAvail =
+            freshProd && freshProd.total_stock !== undefined && freshProd.total_stock !== null
+              ? Number(freshProd.total_stock)
+              : getBaseProductStock(fallbackProd);
+
+          const currentSold =
+            freshProd && freshProd.sold_quantity !== undefined && freshProd.sold_quantity !== null
+              ? Number(freshProd.sold_quantity)
+              : Number(fallbackProd?.sold_quantity || 0);
+
+          const soldQtyNow = Number(item.qty);
+          const newTotalStock = Math.max(0, currentAvail - soldQtyNow);
+          const newSoldQuantity = currentSold + soldQtyNow;
+
+          newOverrides[String(item.id)] = newTotalStock;
+
+          const { error: updateErr } = await supabase
+            .from('products')
+            .update({
+              total_stock: newTotalStock,
+              sold_quantity: newSoldQuantity
+            })
+            .eq('id', item.id);
+
+          if (updateErr) {
+            await supabase
+              .from('products')
+              .update({ total_stock: newTotalStock })
+              .eq('id', item.id);
           }
         }
       }
+
       setLocalStockOverrides(newOverrides);
+      setLiveDbProducts(prev =>
+        prev.map(p =>
+          newOverrides[String(p.id)] !== undefined
+            ? {
+                ...p,
+                total_stock: newOverrides[String(p.id)],
+                sold_quantity: Number(p.sold_quantity || 0) + Number(cart.find(c => String(c.id) === String(p.id))?.qty || 0)
+              }
+            : p
+        )
+      );
 
       const structuredItems = cart.map(c => ({
         id: c.id,
@@ -817,7 +975,7 @@ export default function CounterBillingTab({
         custGstNo: custGstNumber.trim(),
         custAddress: finalCustAddress,
         paymentMethod,
-        shopUpiId: shopUpiId || currentShop?.upi_id || '',
+        shopUpiId: verifiedShopUpi,
         timestamp: nowIso
       };
 
@@ -833,6 +991,7 @@ export default function CounterBillingTab({
         district: currentShop.district || 'Samastipur',
         pincode: currentShop.pincode || '',
         items: structuredItems,
+        product_details: structuredItems,
         total_amount: grandTotal,
         delivery_charge: transportAmt,
         payment_mode: `Counter POS - ${paymentMethod}`,
@@ -892,7 +1051,7 @@ export default function CounterBillingTab({
         phone: finalCustPhone,
         custAddress: finalCustAddress,
         address: finalCustAddress,
-        shopUpiId: shopUpiId || currentShop?.upi_id || adminUpi,
+        shopUpiId: verifiedShopUpi,
         created_at: nowIso
       };
 
@@ -905,12 +1064,12 @@ export default function CounterBillingTab({
         localStorage.setItem(`fixifiy_counter_bills_${currentShop.id}`, JSON.stringify(updatedLocal.slice(0, 500)));
       } catch {}
 
-      if (fetchProducts) fetchProducts(true);
-      if (fetchOrders) fetchOrders(currentShop.id, true);
+      await fetchLiveShopStockFromDb();
+      if (typeof fetchProducts === 'function') fetchProducts(true);
+      if (typeof fetchOrders === 'function') fetchOrders(currentShop.id, true);
 
       setLastGeneratedBill(completeBillRecord);
 
-      // Clear Cart & Inputs
       setCart([]);
       setCustName('');
       setCustPhone('');
@@ -943,6 +1102,7 @@ export default function CounterBillingTab({
     const custGstVal = String(bill.custGstNo || meta.custGstNo || '').trim();
     const addrVal = String(bill.custAddress || bill.address || meta.custAddress || '').trim();
     const totalVal = Number(bill.grandTotal ?? bill.total_amount ?? 0);
+    const billShopUpiVal = String(bill.shopUpiId || meta.shopUpiId || '').trim();
 
     return {
       subTotalVal,
@@ -955,7 +1115,8 @@ export default function CounterBillingTab({
       shopGstVal,
       custGstVal,
       addrVal,
-      totalVal
+      totalVal,
+      billShopUpiVal
     };
   };
 
@@ -1124,7 +1285,7 @@ export default function CounterBillingTab({
   }, [filteredActiveRecords]);
 
   // ==========================================
-  // 📲 WHATSAPP & 🖨️ PRINT (CLEAN HEADER WITHOUT "LIVE BILL RECEIPT")
+  // 📲 WHATSAPP & 🖨️ PRINT (STRICT SHOP OWNER UPI ONLY)
   // ==========================================
   const sendBillOnWhatsApp = (bill: any, isOnlineOrder = false) => {
     let rawItems = bill.cartItems || bill.items || [];
@@ -1144,7 +1305,7 @@ export default function CounterBillingTab({
 
     const d = extractBillDetails(bill);
     const bNo = bill.billNo || bill.order_no || bill.id;
-    const { activeUpi, upiUri } = getShopOwnerQrData(d.totalVal, String(bNo));
+    const { activeUpi, upiUri } = getShopOwnerQrData(d.totalVal, String(bNo), d.billShopUpiVal);
 
     const msg =
       `🏪 *${currentShop?.name || 'SHOP INVOICE'}*%0A` +
@@ -1169,8 +1330,9 @@ export default function CounterBillingTab({
       (d.transportVal > 0 ? `*🚚 ट्रांसपोर्ट / भाड़ा (Transport):* +₹${d.transportVal}%0A` : '') +
       `💰 *कुल देय बिल (Grand Total): ₹${d.totalVal}*%0A` +
       `💳 *पेमेंट मोड:* ${bill.paymentMethod || bill.payment_mode}%0A` +
-      `🏦 *Shop UPI ID:* ${activeUpi}%0A` +
-      `📲 *Pay Link:* ${encodeURIComponent(upiUri)}%0A` +
+      (activeUpi
+        ? `🏦 *Shop UPI ID:* ${activeUpi}%0A📲 *Pay Link:* ${encodeURIComponent(upiUri)}%0A`
+        : '') +
       `--------------------------------%0A` +
       `🙏 धन्यवाद!`;
 
@@ -1195,7 +1357,7 @@ export default function CounterBillingTab({
 
     const d = extractBillDetails(bill);
     const bNo = bill.billNo || bill.order_no || bill.id;
-    const { activeUpi, qrImg } = getShopOwnerQrData(d.totalVal, String(bNo));
+    const { activeUpi, qrImg } = getShopOwnerQrData(d.totalVal, String(bNo), d.billShopUpiVal);
 
     const itemsHtml = rawItems
       .map(
@@ -1286,11 +1448,17 @@ export default function CounterBillingTab({
           <div class="divider"></div>
           <h3 style="text-align:right;font-size:${format === 'thermal' ? '17px' : '21px'};margin:6px 0;">GRAND TOTAL: ₹${d.totalVal}</h3>
           <div class="divider"></div>
-          <div class="qr-box">
-            <p style="font-size:11px;font-weight:bold;margin-bottom:4px;">📱 Scan QR to Pay ₹${d.totalVal} to Shop Owner</p>
-            <img id="shopQrImg" src="${qrImg}" alt="Shop Payment QR" style="width:130px;height:130px;display:block;margin:4px auto;" />
-            <p style="font-size:10.5px;"><strong>Merchant UPI:</strong> ${activeUpi}</p>
-          </div>
+          ${
+            activeUpi && qrImg
+              ? `
+            <div class="qr-box">
+              <p style="font-size:11px;font-weight:bold;margin-bottom:4px;">📱 Scan QR to Pay ₹${d.totalVal} to ${currentShop?.name || 'Shop'}</p>
+              <img id="shopQrImg" src="${qrImg}" alt="Shop Payment QR" style="width:130px;height:130px;display:block;margin:4px auto;" />
+              <p style="font-size:10.5px;"><strong>Shop UPI ID:</strong> ${activeUpi}</p>
+            </div>
+          `
+              : ''
+          }
           <p class="center" style="font-size:11px;margin-top:10px;">🙏 हमारे यहाँ से खरीदारी करने के लिए धन्यवाद!</p>
           <script>
             const img = document.getElementById('shopQrImg');
@@ -1298,7 +1466,7 @@ export default function CounterBillingTab({
               img.onload = function() { setTimeout(function(){ window.print(); }, 200); };
               img.onerror = function() { window.print(); };
             } else {
-              window.onload = function() { window.print(); };
+              window.onload = function() { setTimeout(function(){ window.print(); }, 150); };
             }
           </script>
         </body>
@@ -1761,7 +1929,7 @@ export default function CounterBillingTab({
       `}</style>
 
       {/* ========================================================== */}
-      {/* 🌈 TOP NAVIGATION BAR: AUTO GSTIN BESIDE SHOP NAME         */}
+      {/* 🌈 TOP NAVIGATION BAR: AUTO GSTIN & SHOP UPI STATUS         */}
       {/* ========================================================== */}
       <div
         style={{
@@ -1793,7 +1961,12 @@ export default function CounterBillingTab({
               <span>● वैधता: {posExpiry ? posExpiry.toLocaleDateString('en-IN') : 'Active'}</span>
               <span>|</span>
               <span>
-                🏦 QR UPI: <strong style={{ color: '#4ade80' }}>{shopUpiId || 'सेट नहीं है'}</strong>
+                🏦 Shop UPI:{' '}
+                {liveBillQr.activeUpi ? (
+                  <strong style={{ color: '#4ade80' }}>{liveBillQr.activeUpi}</strong>
+                ) : (
+                  <strong style={{ color: '#f87171' }}>⚠️ UPI ID Not Found</strong>
+                )}
               </span>
               <button
                 onClick={() => setIsEditingUpi(!isEditingUpi)}
@@ -1808,7 +1981,7 @@ export default function CounterBillingTab({
                   cursor: 'pointer'
                 }}
               >
-                ✏️ {shopUpiId ? 'UPI बदलें' : 'QR UPI जोड़ें'}
+                ✏️ {liveBillQr.activeUpi ? 'UPI बदलें' : '+ अपना UPI जोड़ें'}
               </button>
               <button
                 onClick={() => setIsEditingGst(!isEditingGst)}
@@ -1882,7 +2055,7 @@ export default function CounterBillingTab({
 
         {isEditingUpi && (
           <div style={{ marginTop: '10px', background: '#0f172a', padding: '10px', borderRadius: '10px', border: '1px solid #38bdf8', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-            <span style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 'bold' }}>🏦 अपनी दुकान का UPI ID डालें (बिल पर QR छपने के लिए):</span>
+            <span style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 'bold' }}>🏦 अपनी दुकान का UPI ID डालें (प्रोफाइल और बिल QR के लिए):</span>
             <input
               type="text"
               placeholder="उदा: 9876543210@ybl या shop@okaxis"
@@ -1974,7 +2147,6 @@ export default function CounterBillingTab({
 
             <p style={{ fontSize: '12px', color: '#fde68a', fontWeight: 'bold', margin: '6px 0 10px 0' }}>{scanStatusMsg}</p>
 
-            {/* Manual / USB Barcode Gun Input inside Scanner Modal */}
             <div style={{ display: 'flex', gap: '6px' }}>
               <input
                 type="text"
@@ -2029,11 +2201,30 @@ export default function CounterBillingTab({
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: '15px', color: '#38bdf8', fontWeight: '900' }}>
-                  🛍️ 1. इन-स्टॉक सामान चुनें ({filteredProducts.length} In-Stock)
+                  🛍️ 1. स्टॉक रूम का सामान ({filteredProducts.length} Items)
                 </h3>
-                <span style={{ fontSize: '11px', color: '#cbd5e1' }}>केवल स्टॉक में उपलब्ध सामान • क्लिक या QR स्कैन करें</span>
+                <span style={{ fontSize: '11px', color: '#cbd5e1' }}>
+                  📦 रियल स्टॉक से सीधा कनेक्टेड • बिकने पर ऑटो-माइनस होगा
+                </span>
               </div>
-              <div style={{ display: 'flex', gap: '6px' }}>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={fetchLiveShopStockFromDb}
+                  title="Stock Room से ताज़ा स्टॉक रिफ्रेश करें"
+                  style={{
+                    background: '#1e293b',
+                    color: '#38bdf8',
+                    border: '1px solid #38bdf8',
+                    padding: '6px 9px',
+                    borderRadius: '8px',
+                    fontSize: '11px',
+                    fontWeight: '900',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {isSyncingStock ? '⏳...' : '🔄 Sync Stock'}
+                </button>
                 <button
                   type="button"
                   onClick={startCameraScanner}
@@ -2148,7 +2339,6 @@ export default function CounterBillingTab({
                 )}
               </div>
 
-              {/* CATEGORY DROPDOWN SELECT (DEFAULT: ALL) */}
               <select
                 value={selectedCategory}
                 onChange={e => setSelectedCategory(e.target.value)}
@@ -2173,18 +2363,21 @@ export default function CounterBillingTab({
               </select>
             </div>
 
-            {/* COMPACT PRODUCT ROWS (ONLY IN-STOCK ITEMS WITH LIVE REMAINING STOCK) */}
+            {/* COMPACT PRODUCT ROWS WITH REAL `total_stock` */}
             <div className="pos-compact-product-list">
               {filteredProducts.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '35px 10px', color: '#94a3b8', fontSize: '13px' }}>
-                  📭 इस कैटेगरी या सर्च में कोई इन-स्टॉक (In-Stock) सामान नहीं मिला।
+                  📭 स्टॉक रूम में इस कैटेगरी या नाम का कोई प्रोडक्ट नहीं मिला।
                 </div>
               ) : (
                 filteredProducts.map((prod: any, idx: number) => {
                   const pName = String(prod.name || prod.product_name || 'Item');
-                  const price = Number(prod.selling_price || prod.price || prod.rate || 0);
+                  const price = Number(prod.price || prod.selling_price || prod.rate || 0);
                   const mrp = Number(prod.mrp || prod.original_price || 0);
+                  const baseStock = getBaseProductStock(prod);
                   const remainingStock = getRemainingStockAfterCart(prod);
+                  const isOutOfStock = baseStock <= 0;
+                  const isLowStock = baseStock > 0 && baseStock <= 5;
                   const imgUrl = getProductImageUrl(prod);
                   const inCart = cart.find(c => String(c.id) === String(prod.id));
                   const avatarBg = categoryColorPalette[idx % categoryColorPalette.length];
@@ -2195,9 +2388,19 @@ export default function CounterBillingTab({
                       onClick={() => addToCart(prod)}
                       className="pos-compact-product-row"
                       style={{
-                        background: inCart ? 'linear-gradient(90deg, #064e3b, #0f172a)' : '#1e293b',
-                        border: inCart ? '2px solid #4ade80' : '1px solid #334155',
-                        opacity: remainingStock === 0 && !inCart ? 0.5 : 1
+                        background: inCart
+                          ? 'linear-gradient(90deg, #064e3b, #0f172a)'
+                          : isOutOfStock
+                          ? 'rgba(239, 68, 68, 0.08)'
+                          : '#1e293b',
+                        border: inCart
+                          ? '2px solid #4ade80'
+                          : isOutOfStock
+                          ? '1px dashed #ef4444'
+                          : isLowStock
+                          ? '1px solid #f59e0b'
+                          : '1px solid #334155',
+                        opacity: isOutOfStock ? 0.6 : 1
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: 1 }}>
@@ -2261,12 +2464,21 @@ export default function CounterBillingTab({
                             </span>
                             <span
                               style={{
-                                fontSize: '10.5px',
+                                fontSize: '11px',
                                 fontWeight: '900',
-                                color: remainingStock > 0 ? '#4ade80' : '#fbbf24'
+                                padding: '1px 6px',
+                                borderRadius: '4px',
+                                background: isOutOfStock
+                                  ? 'rgba(239, 68, 68, 0.2)'
+                                  : isLowStock
+                                  ? 'rgba(245, 158, 11, 0.2)'
+                                  : 'rgba(16, 185, 129, 0.15)',
+                                color: isOutOfStock ? '#f87171' : isLowStock ? '#fbbf24' : '#4ade80'
                               }}
                             >
-                              बचा स्टॉक: {remainingStock} {prod.unit || 'Pcs'}
+                              {isOutOfStock
+                                ? '🚨 Out of Stock (0)'
+                                : `📦 स्टॉक: ${remainingStock} ${prod.unit || 'Pc'}`}
                             </span>
                             <button
                               type="button"
@@ -2298,18 +2510,23 @@ export default function CounterBillingTab({
                         </div>
                         <button
                           type="button"
+                          disabled={isOutOfStock}
                           style={{
-                            background: inCart ? '#22c55e' : 'linear-gradient(135deg, #38bdf8, #2563eb)',
+                            background: isOutOfStock
+                              ? '#475569'
+                              : inCart
+                              ? '#22c55e'
+                              : 'linear-gradient(135deg, #38bdf8, #2563eb)',
                             color: inCart ? '#052e16' : 'white',
                             border: 'none',
                             padding: '7px 11px',
                             borderRadius: '8px',
                             fontSize: '11.5px',
                             fontWeight: '900',
-                            cursor: 'pointer'
+                            cursor: isOutOfStock ? 'not-allowed' : 'pointer'
                           }}
                         >
-                          {inCart ? `✔ (${inCart.qty})` : '+ Add'}
+                          {isOutOfStock ? '0 Stock' : inCart ? `✔ (${inCart.qty})` : '+ Add'}
                         </button>
                       </div>
                     </div>
@@ -2324,7 +2541,6 @@ export default function CounterBillingTab({
           {/* ====================================================== */}
           <div id="live-bill-receipt-section" className="pos-half-pane">
             <div className="pos-live-receipt-box">
-              {/* Receipt Header (Clean - Removed "LIVE BILL RECEIPT (नॉर्मल बिल)") */}
               <div style={{ textAlign: 'center', borderBottom: '2px dashed #94a3b8', paddingBottom: '8px', marginBottom: '10px' }}>
                 {isGstBillEnabled && (
                   <span style={{ background: '#059669', color: 'white', padding: '2px 10px', borderRadius: '10px', fontSize: '10px', fontWeight: '900', display: 'inline-block', marginBottom: '4px' }}>
@@ -2346,7 +2562,7 @@ export default function CounterBillingTab({
                 </div>
               </div>
 
-              {/* Customer Inputs: Name, WhatsApp Phone & Full Address */}
+              {/* Customer Inputs */}
               <div style={{ background: '#f1f5f9', padding: '8px', borderRadius: '8px', border: '1px solid #cbd5e1', marginBottom: '10px' }}>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
                   <div style={{ flex: '1 1 130px', minWidth: 0 }}>
@@ -2416,7 +2632,9 @@ export default function CounterBillingTab({
                               )}
                               <div style={{ minWidth: 0 }}>
                                 <div style={{ fontSize: '12px', color: '#0f172a' }}>{idx + 1}. {item.name}</div>
-                                <small style={{ color: '#64748b', fontWeight: 'normal', fontSize: '10px' }}>{item.category}</small>
+                                <small style={{ color: '#64748b', fontWeight: 'normal', fontSize: '10px' }}>
+                                  {item.category} {!item.isCustom ? `(Max: ${item.maxStock})` : ''}
+                                </small>
                               </div>
                             </div>
                           </td>
@@ -2471,7 +2689,7 @@ export default function CounterBillingTab({
                 </table>
               </div>
 
-              {/* Bill Totals + Discount + Labour Charge + Transport Charge + GST Checkbox */}
+              {/* Bill Totals */}
               <div style={{ background: '#f8fafc', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', marginBottom: '10px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', marginBottom: '6px', color: '#334155' }}>
                   <span>सामान का कुल (Subtotal - {cart.reduce((s, i) => s + i.qty, 0)} Qty):</span>
@@ -2621,15 +2839,31 @@ export default function CounterBillingTab({
                 })}
               </div>
 
-              {/* Live Shop Owner QR inside Receipt */}
-              {grandTotal > 0 && (
+              {/* 🔥 STRICT SHOP OWNER QR DISPLAY: SHOWS ONLY IF SHOP OWNER UPI IS ADDED 🔥 */}
+              {grandTotal > 0 && liveBillQr.activeUpi && liveBillQr.qrImg && (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#eff6ff', border: '1px dashed #3b82f6', borderRadius: '8px', padding: '6px 10px', marginBottom: '10px' }}>
                   <div>
                     <div style={{ fontSize: '11px', fontWeight: '900', color: '#1e3a8a' }}>📱 Shop Owner Payment QR (₹{grandTotal})</div>
                     <div style={{ fontSize: '10px', color: '#475569' }}>UPI: <strong>{liveBillQr.activeUpi}</strong></div>
-                    <div style={{ fontSize: '9.5px', color: '#15803d', fontWeight: 'bold' }}>✔ प्रिंट बिल पर भी यह QR छपेगा</div>
+                    <div style={{ fontSize: '9.5px', color: '#15803d', fontWeight: 'bold' }}>✔ प्रिंट बिल पर भी आपका यही QR छपेगा</div>
                   </div>
                   <img src={liveBillQr.qrImg} alt="Shop QR" style={{ width: '60px', height: '60px', borderRadius: '6px', border: '2px solid #fff' }} />
+                </div>
+              )}
+
+              {/* If UPI is NOT added in Shop Profile, show "UPI ID Not Found" notice when UPI mode is selected */}
+              {grandTotal > 0 && !liveBillQr.activeUpi && paymentMethod === 'UPI' && (
+                <div style={{ background: '#fef2f2', border: '1px dashed #ef4444', borderRadius: '8px', padding: '7px 10px', marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                  <span style={{ fontSize: '11px', color: '#dc2626', fontWeight: '900' }}>
+                    ⚠️ UPI ID Not Found (प्रोफाइल में दुकानदार का UPI सेट नहीं है, इसलिए QR नहीं दिखेगा)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingUpi(true)}
+                    style={{ background: '#dc2626', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '6px', fontSize: '10px', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    + अपना UPI जोड़ें
+                  </button>
                 </div>
               )}
 
@@ -2650,7 +2884,7 @@ export default function CounterBillingTab({
                 }}
               >
                 {isGeneratingBill
-                  ? '⏳ बिल सेव हो रहा है...'
+                  ? '⏳ बिल सेव व स्टॉक माइनस हो रहा है...'
                   : `✅ ${isGstBillEnabled ? 'GST बिल' : 'बिल'} सेव करें व Print / WhatsApp करें (₹${grandTotal})`}
               </button>
             </div>

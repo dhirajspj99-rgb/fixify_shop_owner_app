@@ -23,7 +23,7 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
   
   // 🔥 FETCH DYNAMIC APP SETTINGS (UPI, QR & Charges) 🔥
   const [appSettings, setAppSettings] = useState<any>({});
-  const [zonalManagerName, setZonalManagerName] = useState<string>(''); // Zonal Manager State
+  const [zonalManagerName, setZonalManagerName] = useState<string>('');
   
   useEffect(() => {
     const fetchSettings = async () => {
@@ -57,11 +57,12 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
     fetchZonalManager();
   }, [currentShop?.district]);
 
-  // 🔥 View / Edit States 🔥
+  // 🔥 View / Edit & OTP States 🔥
   const [isEditing, setIsEditing] = useState(false);
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authPassword, setAuthPassword] = useState('');
-  const [isVerifying, setIsVerifying] = useState(false);
+  const [showOtpModal, setShowOtpModal] = useState(false);
+  const [otpInput, setOtpInput] = useState('');
+  const [generatedOtp, setGeneratedOtp] = useState('');
+  const [isSendingOtp, setIsSendingOtp] = useState(false);
 
   // Editable States
   const [editShopName, setEditShopName] = useState(currentShop?.name || '');
@@ -97,59 +98,41 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
   const [isRequestingPremium, setIsRequestingPremium] = useState(false);
   const [isCancellingPremium, setIsCancellingPremium] = useState(false);
 
-  // PASSWORD CHANGE STATES
-  const [showPasswordSection, setShowPasswordSection] = useState(false);
-  const [oldPass, setOldPass] = useState('');
-  const [newPass, setNewPass] = useState('');
-  const [confirmPass, setConfirmPass] = useState('');
-  const [showPass, setShowPass] = useState(false);
-  const [isUpdatingPass, setIsUpdatingPass] = useState(false);
+  // ----------------------------------------------------
+  // 1. SECURE EDIT VERIFICATION (OTP SYSTEM)
+  // ----------------------------------------------------
+  const handleEditClick = async () => {
+    setIsSendingOtp(true);
+    
+    // Yahan par hum ek 4-digit random OTP generate kar rahe hain
+    const fakeOtp = Math.floor(1000 + Math.random() * 9000).toString();
+    setGeneratedOtp(fakeOtp);
+    
+    // TODO: Yahan aap apne SMS Provider (Fast2SMS, Twilio, Msg91) ka API call laga sakte hain.
+    // Example: await fetch('/api/send-sms', { method: 'POST', body: JSON.stringify({ phone: currentShop.phone, otp: fakeOtp }) });
 
-  // 1. SECURE EDIT VERIFICATION
-  const handleEditClick = () => setShowAuthModal(true);
-
-  const verifyPassword = async () => {
-    if (!authPassword) return alert("❌ Kripya password dalein.");
-    setIsVerifying(true);
-    try {
-      if (authPassword === currentShop.password) {
-        setIsEditing(true);
-        setShowAuthModal(false);
-        setAuthPassword('');
-      } else {
-        alert("❌ Galat Password! Dobara koshish karein.");
-      }
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    }
-    setIsVerifying(false);
+    console.log("Test OTP:", fakeOtp); // Developer console mein dekhne ke liye
+    alert(`Testing Mode: OTP sent to ${currentShop.phone}\nAapka OTP hai: ${fakeOtp}`); // Temporary alert for testing
+    
+    setShowOtpModal(true);
+    setIsSendingOtp(false);
   };
 
-  const handlePasswordChange = async () => {
-    if (!oldPass || !newPass || !confirmPass) return alert("❌ Sabhi fields bharein.");
-    if (newPass !== confirmPass) return alert("❌ Naye password match nahi ho rahe.");
-    if (oldPass !== currentShop.password) return alert("❌ Purana password galat hai.");
-
-    setIsUpdatingPass(true);
-    try {
-      const { error } = await supabase
-        .from('shops')
-        .update({ password: newPass })
-        .eq('id', currentShop.id);
-
-      if (error) throw error;
-      alert("✅ Password safaltapurvak badal gaya!");
-      setCurrentShop((prev: any) => ({ ...prev, password: newPass }));
-      setShowPasswordSection(false);
-      setOldPass('');
-      setNewPass('');
-      setConfirmPass('');
-    } catch (err: any) {
-      alert("Error: " + err.message);
+  const verifyOtp = () => {
+    if (!otpInput) return alert("❌ Kripya OTP dalein.");
+    
+    if (otpInput === generatedOtp) {
+      setIsEditing(true);
+      setShowOtpModal(false);
+      setOtpInput(''); // Clear input after success
+    } else {
+      alert("❌ Galat OTP! Kripya sahi OTP dalein.");
     }
-    setIsUpdatingPass(false);
   };
 
+  // ----------------------------------------------------
+  // PHOTO UPLOAD & SAVE PROFILE
+  // ----------------------------------------------------
   const handlePhotoUpload = async (e: any) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -207,12 +190,6 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
     setIsSaving(false);
   };
 
-  const handleApplyReferral = () => {
-    if (!referralCode.trim()) return alert("❌ Kripya valid referral code dalein.");
-    alert(`✅ Referral code '${referralCode}' successfully applied!`);
-    setReferralCode('');
-  };
-
   const handleDocUpload = async (e: any, field: string) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -238,7 +215,7 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
     setUploadingDoc(null);
   };
 
-  // 🔥 5. LINKED WITH app_settings.idCardUpi & id_card_charge 🔥
+  // 🔥 CERTIFICATE REQUEST LOGIC 🔥
   const idCardCharge = Number(appSettings?.id_card_charge) || 200;
 
   const handleUpiPaymentClick = () => {
@@ -251,20 +228,16 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
     if (!utrNumber.trim() || utrNumber.length < 10) {
       return alert("❌ Kripya sahi aur pura UTR / Reference Number dalein (Kam se kam 10-12 digits).");
     }
-
     setIsRequestingCert(true);
     try {
       const { error } = await supabase
         .from('shops')
-        .update({ 
-          certificate_status: 'requested',
-          certificate_utr: utrNumber 
-        })
+        .update({ certificate_status: 'requested', certificate_utr: utrNumber })
         .eq('id', currentShop.id);
 
       if (error) throw error;
 
-      const { error: txError } = await supabase.from('wallet_transactions').insert({
+      await supabase.from('wallet_transactions').insert({
         shop_id: currentShop.id,
         user_type: 'shop',
         amount: idCardCharge,
@@ -273,8 +246,6 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
         token_no: utrNumber,
         reason: `ID Card / Certificate Payment (UTR: ${utrNumber})`
       });
-
-      if (txError) throw txError;
 
       alert("✅ UTR Submit ho gaya hai! Admin dwara payment verify hone ke baad Certificate download ka option aa jayega.");
       setCurrentShop((prev: any) => ({ ...prev, certificate_status: 'requested', certificate_utr: utrNumber }));
@@ -285,24 +256,18 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
     setIsRequestingCert(false);
   };
 
-  // 🔥 CANCEL ID CARD / CERTIFICATE REQUEST 🔥
   const handleCancelCertRequest = async () => {
     if(!window.confirm("Kya aap sach mein Certificate ki request cancel karna chahte hain?")) return;
     setIsCancellingCert(true);
     try {
-      const { error } = await supabase.from('shops').update({ 
-        certificate_status: null, 
-        certificate_utr: null 
-      }).eq('id', currentShop.id);
-      
-      if (error) throw error;
+      await supabase.from('shops').update({ certificate_status: null, certificate_utr: null }).eq('id', currentShop.id);
       alert("✅ Certificate request cancel ho gayi.");
       setCurrentShop((prev: any) => ({ ...prev, certificate_status: null, certificate_utr: null }));
     } catch (err: any) { alert("Error: " + err.message); }
     setIsCancellingCert(false);
   };
 
-  // 🔥 6. PREMIUM SUBSCRIPTION PAYMENT (DYNAMIC) 🔥
+  // 🔥 PREMIUM SUBSCRIPTION LOGIC 🔥
   const premiumPlans = appSettings?.premium_plans || { '1_month': 199, '3_months': 499, '9_months': 1299, '1_year': 1499 };
   
   const openPremiumModal = (planId: string) => {
@@ -319,20 +284,12 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
 
   const handlePremiumUtrSubmit = async () => {
     if (!premiumUtr.trim() || premiumUtr.length < 10) return alert("❌ Kripya sahi 12-digit UTR Number dalein.");
-
     setIsRequestingPremium(true);
     try {
       const planPrice = premiumPlans[selectedPlan] || 0;
+      await supabase.from('shops').update({ premium_status: 'requested', premium_plan_selected: selectedPlan, premium_utr: premiumUtr }).eq('id', currentShop.id);
 
-      const { error } = await supabase.from('shops').update({ 
-        premium_status: 'requested', 
-        premium_plan_selected: selectedPlan,
-        premium_utr: premiumUtr 
-      }).eq('id', currentShop.id);
-
-      if (error) throw error;
-
-      const { error: txError } = await supabase.from('wallet_transactions').insert({
+      await supabase.from('wallet_transactions').insert({
         shop_id: currentShop.id,
         user_type: 'shop',
         amount: planPrice,
@@ -342,8 +299,6 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
         reason: `Premium Membership Payment - ${selectedPlan.replace('_', ' ')} (UTR: ${premiumUtr})`
       });
 
-      if (txError) throw txError;
-
       alert("✅ Premium Subscription ki request bhej di gayi hai. Admin jald verify karenge.");
       setCurrentShop((prev: any) => ({ ...prev, premium_status: 'requested', premium_plan_selected: selectedPlan, premium_utr: premiumUtr }));
       setIsPremiumModalOpen(false);
@@ -351,7 +306,6 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
     setIsRequestingPremium(false);
   };
 
-  // 🔥 CANCEL PREMIUM REQUEST 🔥
   const handleCancelPremiumRequest = async () => {
     if(!window.confirm("Kya aap sach mein Premium request cancel karna chahte hain?")) return;
     setIsCancellingPremium(true);
@@ -359,28 +313,20 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
       const isStillActive = currentShop.premium_end_date && new Date(currentShop.premium_end_date) > new Date();
       const revertStatus = isStillActive ? 'active' : null;
 
-      const { error } = await supabase.from('shops').update({ 
-        premium_status: revertStatus, 
-        premium_plan_selected: null,
-        premium_utr: null 
-      }).eq('id', currentShop.id);
-      
-      if (error) throw error;
+      await supabase.from('shops').update({ premium_status: revertStatus, premium_plan_selected: null, premium_utr: null }).eq('id', currentShop.id);
       alert("✅ Premium request cancel ho gayi.");
       setCurrentShop((prev: any) => ({ ...prev, premium_status: revertStatus, premium_plan_selected: null, premium_utr: null }));
     } catch (err: any) { alert("Error: " + err.message); }
     setIsCancellingPremium(false);
   };
 
-  // 🔥 7. PDF DOWNLOAD (NOW 2 PAGES: CERTIFICATE + T&C ONLY) 🔥
+  // 🔥 PDF DOWNLOAD LOGIC 🔥
   const handleDownloadCertificate = async () => {
     const element = document.getElementById('print-certificate-container');
     if (!element) return;
     
     alert("⏳ Generating High-Quality PDF (Certificate & T&C)... Kripya intezar karein.");
-    
     const html2pdf = (await import('html2pdf.js')).default;
-    // Scale 2 is usually better to prevent content from cutting off across pages
     const opt = { 
         margin: 0, 
         filename: `Fixifiy_Certificate_${currentShop.phone}.pdf`, 
@@ -457,7 +403,9 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
         {/* ACTION BUTTONS */}
         <div style={{ display: 'flex', gap: '15px', marginTop: '20px', marginBottom: '20px' }}>
           {!isEditing ? (
-            <button onClick={handleEditClick} style={{ flex: 1, background: '#3b82f6', color: 'white', padding: '12px', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontSize: '15px' }}>✏️ Edit Profile</button>
+            <button onClick={handleEditClick} disabled={isSendingOtp} style={{ flex: 1, background: '#3b82f6', color: 'white', padding: '12px', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontSize: '15px' }}>
+              {isSendingOtp ? 'Sending OTP...' : '✏️ Edit Profile'}
+            </button>
           ) : (
             <>
               <button onClick={() => setIsEditing(false)} style={{ flex: 1, background: '#475569', color: 'white', padding: '12px', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontSize: '15px' }}>❌ Cancel</button>
@@ -531,16 +479,27 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
 
       {/* ======================= MODALS ======================= */}
       
-      {/* 1. PASSWORD VERIFICATION MODAL */}
-      {showAuthModal && (
+      {/* 1. OTP VERIFICATION MODAL */}
+      {showOtpModal && (
         <div style={{...modalOverlayStyle, zIndex: 10005}}>
           <div style={{...modalContentStyle, maxWidth: '380px', textAlign: 'center'}}>
-            <h3 style={{ color: '#38bdf8', marginBottom: '10px' }}>🔒 Enter Password</h3>
-            <p style={{ color: '#94a3b8', fontSize: '13px', marginBottom: '20px' }}>Security ke liye apna account password enter karein.</p>
-            <input type="password" placeholder="Enter current password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} style={{ ...inputStyle, marginBottom: '20px', textAlign: 'center' }} />
+            <h3 style={{ color: '#38bdf8', marginBottom: '10px' }}>📱 Enter OTP</h3>
+            <p style={{ color: '#94a3b8', fontSize: '13px', marginBottom: '20px' }}>
+              Security ke liye aapke number par ek 4-digit OTP bheja gaya hai.
+            </p>
+            
+            <input 
+              type="text" 
+              placeholder="Enter 4-digit OTP" 
+              maxLength={4}
+              value={otpInput} 
+              onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))} 
+              style={{ ...inputStyle, marginBottom: '20px', textAlign: 'center', fontSize: '20px', letterSpacing: '8px' }} 
+            />
+            
             <div style={{ display: 'flex', gap: '10px' }}>
-              <button onClick={() => setShowAuthModal(false)} style={{ flex: 1, padding: '10px', background: '#334155', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Cancel</button>
-              <button onClick={verifyPassword} disabled={isVerifying} style={{ flex: 1, padding: '10px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>{isVerifying ? 'Checking...' : 'Verify & Edit'}</button>
+              <button onClick={() => { setShowOtpModal(false); setOtpInput(''); }} style={{ flex: 1, padding: '10px', background: '#334155', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Cancel</button>
+              <button onClick={verifyOtp} style={{ flex: 1, padding: '10px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Verify OTP</button>
             </div>
           </div>
         </div>
@@ -561,7 +520,6 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
             <div style={{ textAlign: 'left', background: '#0f172a', padding: '15px', borderRadius: '8px', border: '1px solid #334155', marginBottom: '20px' }}>
               <label style={{ fontSize: '13px', color: '#94a3b8', display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>Step 2: Enter 12-Digit UTR / Ref. Number</label>
               <input type="text" placeholder="e.g. 312345678901" value={utrNumber} onChange={(e) => setUtrNumber(e.target.value)} style={{ ...inputStyle, fontSize: '16px', letterSpacing: '1px', textAlign: 'center' }} />
-              <p style={{ fontSize: '11px', color: '#f87171', marginTop: '8px', margin: '8px 0 0 0' }}>*Payment verify ki jayegi. Galat UTR dalne par reject ho jayega.</p>
             </div>
             <div style={{ display: 'flex', gap: '15px' }}>
               <button onClick={() => setIsCertPaymentModalOpen(false)} style={{ padding: '12px', borderRadius: '8px', border: 'none', background: '#334155', color: 'white', flex: 1, fontWeight: 'bold', cursor: 'pointer' }}>❌ Cancel</button>
@@ -601,41 +559,28 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
           
           {/* ============================== PAGE 1: CERTIFICATE ============================== */}
           <div style={{ height: '297mm', width: '210mm', padding: '10mm', boxSizing: 'border-box', position: 'relative' }}>
-            
             <div style={{ border: '8px solid #0284c7', borderRadius: '15px', padding: '4px', height: '100%', boxSizing: 'border-box' }}>
               <div style={{ border: '3px solid #facc15', borderRadius: '10px', height: '100%', position: 'relative', overflow: 'hidden', padding: '15mm', boxSizing: 'border-box', backgroundColor: '#f8fafc' }}>
-                
-                {/* Background Watermark */}
                 <div style={{ position: 'absolute', top: '0', left: '0', width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1 }}>
                   <h1 style={{ fontSize: '140px', color: 'rgba(2, 132, 199, 0.05)', transform: 'rotate(-45deg)', margin: 0, whiteSpace: 'nowrap', userSelect: 'none', fontWeight: '900' }}>FIXIFIY</h1>
                 </div>
-
                 <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', height: '100%', textAlign: 'center' }}>
-                  
-                  {/* Header */}
                   <div style={{ marginBottom: '35px' }}>
                       <h1 style={{ color: '#0284c7', fontSize: '40px', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '900', letterSpacing: '2px', textShadow: '1px 1px 2px rgba(0,0,0,0.1)' }}>FIXIFIY TECHNOLOGY</h1>
                       <p style={{ fontSize: '15px', color: '#b45309', letterSpacing: '3px', textTransform: 'uppercase', fontWeight: 'bold', margin: 0 }}>(A Unit of Mahadev Enterprises)</p>
                   </div>
-
                   <div style={{ margin: '0 auto 35px auto', background: 'linear-gradient(90deg, #0284c7, #3b82f6)', padding: '12px 40px', borderRadius: '50px', display: 'inline-block', boxShadow: '0 4px 10px rgba(0,0,0,0.15)' }}>
                     <p style={{ fontSize: '18px', color: '#ffffff', letterSpacing: '5px', textTransform: 'uppercase', margin: 0, fontWeight: '900' }}>Verified Partner Certificate</p>
                   </div>
-                  
-                  {/* Body Content */}
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                       <p style={{ fontSize: '20px', color: '#334155', marginBottom: '25px', fontStyle: 'italic' }}>This is proudly certified that</p>
-                      
                       <h2 style={{ fontSize: '36px', color: '#0f172a', borderBottom: '3px solid #facc15', display: 'inline-block', paddingBottom: '10px', marginBottom: '30px', fontWeight: '900', textTransform: 'capitalize' }}>
                         {currentShop?.name || 'Shop Name'}
                       </h2>
-                      
                       <p style={{ fontSize: '17px', color: '#475569', lineHeight: '1.8', maxWidth: '550px', margin: '0 auto' }}>
                         Is officially recognized as a verified and trusted partner shop offering hardware, building materials, and fabrication services under the Fixifiy ecosystem. We authorize them to operate as a verified vendor for our customers with full platform benefits.
                       </p>
                   </div>
-
-                  {/* Signatures Area */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'auto', padding: '0 20px', alignItems: 'flex-end' }}>
                     <div style={{ textAlign: 'center', width: '220px' }}>
                       <h4 style={{ margin: '0 0 10px 0', fontSize: '18px', color: '#0f172a', fontStyle: 'italic', height: '24px' }}>
@@ -644,15 +589,12 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
                       <p style={{ borderTop: '2px solid #0284c7', paddingTop: '8px', fontWeight: 'bold', fontSize: '15px', color: '#334155', margin: 0 }}>Authorized Signatory</p>
                       <p style={{ fontSize: '12px', color: '#64748b', margin: '5px 0 0 0' }}>Zonal Manager</p>
                     </div>
-                    
                     <div style={{ textAlign: 'center', width: '220px' }}>
                       <h4 style={{ margin: '0 0 10px 0', fontSize: '18px', color: '#0f172a', fontStyle: 'italic' }}>Fixifiy Admin</h4>
                       <p style={{ borderTop: '2px solid #0284c7', paddingTop: '8px', fontWeight: 'bold', fontSize: '15px', color: '#334155', margin: 0 }}>Fixifiy</p>
                       <p style={{ fontSize: '12px', color: '#64748b', margin: '5px 0 0 0' }}>(A Unit of Mahadev Ent.)</p>
                     </div>
                   </div>
-
-                  {/* Footer / Disclaimer */}
                   <div style={{ marginTop: '35px', borderTop: '1px dashed #cbd5e1', paddingTop: '12px' }}>
                     <p style={{ fontSize: '13px', color: '#64748b', margin: 0, fontWeight: '600' }}>
                       * Yah ek system generated certificate hai. Kisi problem ke liye humare Fixifiy karyalay mein call karein ya sampark karein.
@@ -663,55 +605,43 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
             </div>
           </div>
 
-          {/* ============================== PAGE 2: TERMS & CONDITIONS (FIXED LAYOUT) ============================== */}
+          {/* ============================== PAGE 2: TERMS & CONDITIONS ============================== */}
           <div style={{ height: '297mm', width: '210mm', padding: '15mm', boxSizing: 'border-box', position: 'relative', pageBreakBefore: 'always', backgroundColor: '#f8fafc', border: '8px solid #cbd5e1' }}>
-            
             <div style={{ position: 'absolute', top: '0', left: '0', width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1, overflow: 'hidden' }}>
               <h1 style={{ fontSize: '140px', color: 'rgba(0,0,0,0.03)', transform: 'rotate(-45deg)', margin: 0, whiteSpace: 'nowrap', userSelect: 'none', fontWeight: '900' }}>FIXIFIY</h1>
             </div>
-
             <div style={{ position: 'relative', zIndex: 2, padding: '5mm', height: '100%', display: 'flex', flexDirection: 'column' }}>
-              
               <div style={{ borderBottom: '3px solid #0284c7', paddingBottom: '12px', marginBottom: '25px', textAlign: 'center' }}>
                 <h2 style={{ color: '#0284c7', fontSize: '30px', margin: 0, textTransform: 'uppercase', fontWeight: '900', letterSpacing: '1px' }}>Terms & Conditions</h2>
                 <p style={{ color: '#b45309', fontSize: '16px', margin: '6px 0 0 0', fontWeight: 'bold' }}>Shop Owner Guidelines & Policies (नियम एवं शर्तें)</p>
               </div>
-
               <ul style={{ fontSize: '14px', color: '#334155', lineHeight: '1.6', paddingLeft: '0', margin: 0, listStyle: 'none', flex: 1 }}>
-                
                 <li style={{ marginBottom: '20px', background: '#ffffff', padding: '15px 20px', borderRadius: '8px', borderLeft: '5px solid #facc15', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
                   <strong style={{ color: '#0f172a', display: 'block', fontSize: '17px', marginBottom: '6px' }}>1. Return Policy</strong>
                   <span style={{ fontWeight: 'bold', color: '#475569' }}>ENG:</span> Fixifiy does not handle the return policy directly. It is entirely a mutual agreement between the Shop Owner and the Customer.<br/>
                   <span style={{ fontWeight: 'bold', color: '#475569' }}>HIN:</span> Fixifiy सीधे तौर पर कोई रिटर्न पॉलिसी हैंडल नहीं करता है। यह पूरी तरह से शॉप ओनर (दुकानदार) और ग्राहक के बीच का मामला है।
                 </li>
-                
                 <li style={{ marginBottom: '20px', background: '#ffffff', padding: '15px 20px', borderRadius: '8px', borderLeft: '5px solid #0284c7', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
                   <strong style={{ color: '#0f172a', display: 'block', fontSize: '17px', marginBottom: '6px' }}>2. Payment Withdrawal (Payouts)</strong>
                   <span style={{ fontWeight: 'bold', color: '#475569' }}>ENG:</span> Shop owners can withdraw their payments from the Fixifiy Wallet only after <strong>7 days</strong> of order completion.<br/>
                   <span style={{ fontWeight: 'bold', color: '#475569' }}>HIN:</span> ऑर्डर पूरा होने के <strong>7 दिन बाद</strong> ही शॉप ओनर अपने फिक्सिफाई वॉलेट से पेमेंट निकाल (withdraw) सकते हैं।
                 </li>
-
                 <li style={{ marginBottom: '20px', background: '#ffffff', padding: '15px 20px', borderRadius: '8px', borderLeft: '5px solid #ef4444', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
                   <strong style={{ color: '#0f172a', display: 'block', fontSize: '17px', marginBottom: '6px' }}>3. Product Responsibility & Packing Video</strong>
                   <span style={{ fontWeight: 'bold', color: '#475569' }}>ENG:</span> A packing video is <strong>mandatory</strong> at the time of dispatch. The Shop Owner is responsible for the product for up to <strong>1 week</strong> post-delivery.<br/>
                   <span style={{ fontWeight: 'bold', color: '#475569' }}>HIN:</span> प्रोडक्ट डिस्पैच करते समय पैकिंग का <strong>वीडियो बनाना अनिवार्य</strong> है। डिलीवरी के <strong>1 हफ्ते बाद</strong> तक प्रोडक्ट की जिम्मेदारी शॉप ओनर की होगी।
                 </li>
-                
                 <li style={{ marginBottom: '20px', background: '#ffffff', padding: '15px 20px', borderRadius: '8px', borderLeft: '5px solid #10b981', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
                   <strong style={{ color: '#0f172a', display: 'block', fontSize: '17px', marginBottom: '6px' }}>4. Platform Usage & Guidelines</strong>
                   <span style={{ fontWeight: 'bold', color: '#475569' }}>ENG:</span> Shop owners must adhere to all quality standards. Fraudulent activities may result in account suspension.<br/>
                   <span style={{ fontWeight: 'bold', color: '#475569' }}>HIN:</span> शॉप ओनर को फिक्सिफाई के सभी क्वालिटी गाइडलाइन्स का पालन करना होगा। गलत गतिविधि पर अकाउंट सस्पेंड किया जा सकता है।
                 </li>
               </ul>
-
-              {/* STYLISH NOTE SECTION - ONLY FOR FIXIFIY */}
               <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: '8px', padding: '15px', marginTop: '10px', textAlign: 'center' }}>
                 <p style={{ margin: 0, color: '#0369a1', fontSize: '14px', fontWeight: 'bold' }}>
                   📢 SPECIAL NOTE: Explore more products & services provided by Fixifiy (A Unit of Mahadev Enterprises). Join hands with us for a brighter and better future! We are committed to empowering local businesses.
                 </p>
               </div>
-
-              {/* Disclaimer Footer Page 2 */}
               <div style={{ borderTop: '2px solid #cbd5e1', paddingTop: '12px', marginTop: '15px', textAlign: 'center' }}>
                 <p style={{ fontSize: '15px', color: '#0f172a', margin: 0, fontWeight: '900' }}>FIXIFIY (A Unit of Mahadev Enterprises)</p>
                 <p style={{ fontSize: '13px', color: '#64748b', margin: '5px 0 0 0', fontWeight: '600' }}>
@@ -720,10 +650,8 @@ export default function ShopProfile({ currentShop, setCurrentShop, onClose, fetc
               </div>
             </div>
           </div>
-
         </div>
       </div>
-
     </div>
   );
 }

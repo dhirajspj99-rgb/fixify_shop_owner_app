@@ -1,51 +1,78 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
+import { useRouter } from 'next/navigation';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  // 🔥 Toast dikhane ke liye state
+  const router = useRouter();
   const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
+
+  const backPressCount = useRef(0);
+  const pressTimer = useRef<NodeJS.Timeout | null>(null);
+  const actionTimer = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    if (Capacitor.isNativePlatform()) {
-      let lastBackPressTime = 0;
+    if (!Capacitor.isNativePlatform()) return;
 
-      const backListener = CapacitorApp.addListener('backButton', async () => {
-        const path = window.location.pathname;
-        
-        // 🔥 Check karein ki user logged in hai ya nahi
-        const isLoggedIn = !!localStorage.getItem('fixifiy_shop');
-        
-        // Agar logged in hai, toh uska aakhri page '/shop-owner-dashboard' hai
-        // Agar logged in nahi hai, toh uska aakhri page '/' ya '/login' hai
-        const isMainPage = (isLoggedIn && path === '/shop-owner-dashboard') || (!isLoggedIn && (path === '/' || path === '/login'));
+    const backListener = CapacitorApp.addListener('backButton', async () => {
+      const path = window.location.pathname;
+      const isLoggedIn = !!localStorage.getItem('fixifiy_shop');
+      
+      const isMainPage = (isLoggedIn && path === '/shop-owner-dashboard') || (!isLoggedIn && (path === '/' || path === '/login'));
 
-        if (isMainPage) {
-          const currentTime = new Date().getTime();
-          // Agar 2 second ke andar dobara back dabaya, toh Exit kar do
-          if (currentTime - lastBackPressTime < 2000) {
-            CapacitorApp.exitApp();
-          } else {
-            lastBackPressTime = currentTime;
+      if (!isMainPage) {
+        // Normal page par ek step peeche
+        window.history.back();
+        return;
+      }
+
+      backPressCount.current += 1;
+
+      if (backPressCount.current === 1) {
+        // 1 Baar dabane par warning
+        setToastMessage("Logout ke liye 1 baar aur dabayein. App close ke liye 2 baar.");
+        setShowToast(true);
+
+        pressTimer.current = setTimeout(() => {
+          backPressCount.current = 0;
+          setShowToast(false);
+        }, 3000);
+      } 
+      else if (backPressCount.current === 2) {
+        // 2 Baar dabane par thoda wait karenge 3rd click ke liye
+        actionTimer.current = setTimeout(() => {
+          if (backPressCount.current === 2) {
+            // Logout Logic
+            localStorage.removeItem('fixifiy_shop');
+            localStorage.removeItem('shop_login_time');
             
-            // 🔥 Screen par message dikhao
+            setToastMessage("Logging out...");
             setShowToast(true);
-            setTimeout(() => setShowToast(false), 2000); // 2 second baad message hata do
+            setTimeout(() => setShowToast(false), 2000);
+            
+            backPressCount.current = 0;
+            router.replace('/login');
           }
-        } 
-        else {
-          // Baki kisi bhi page par hone par normal ek page peeche jayega
-          window.history.back();
-        }
-      });
+        }, 400); // 400ms ka wait teesre press ke liye
+      } 
+      else if (backPressCount.current >= 3) {
+        // 3 Baar dabane par direct Exit (Bina logout)
+        if (actionTimer.current) clearTimeout(actionTimer.current);
+        if (pressTimer.current) clearTimeout(pressTimer.current);
+        
+        backPressCount.current = 0;
+        setShowToast(false);
+        CapacitorApp.exitApp();
+      }
+    });
 
-      return () => {
-        backListener.then(listener => listener.remove());
-      };
-    }
-  }, []);
+    return () => {
+      backListener.then(listener => listener.remove());
+    };
+  }, [router]);
 
   return (
     <html lang="en">
@@ -54,7 +81,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           name="viewport" 
           content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" 
         />
-        {/* 🔥 FIX: Aapke public folder mein 'icon.png' hai, isliye yahan wahi naam set kiya hai */}
         <link rel="icon" type="image/png" href="/icon.png" />
         <link rel="apple-touch-icon" href="/icon.png" />
         <link rel="shortcut icon" href="/icon.png" />
@@ -70,7 +96,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         boxSizing: 'border-box'
       }}>
         
-        {/* 🔥 TOAST MESSAGE UI 🔥 */}
+        {/* 🔥 TOAST MESSAGE UI */}
         {showToast && (
           <div style={{
             position: 'fixed',
@@ -88,7 +114,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             whiteSpace: 'nowrap',
             transition: 'opacity 0.3s ease-in-out'
           }}>
-            ⏳ Exit karne ke liye ek baar aur Back dabayein
+            ⏳ {toastMessage}
           </div>
         )}
 
