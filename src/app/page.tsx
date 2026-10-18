@@ -40,9 +40,11 @@ export default function ShopOwnerGuestHomePage() {
     .hero-banner { background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%); color: white; padding: 50px 16px; text-align: center; border-bottom-left-radius: 40px; border-bottom-right-radius: 40px; box-shadow: 0 10px 40px rgba(15,23,42,0.2); margin-bottom: 30px; box-sizing: border-box; width: 100%; }
     .brand-logo-card { background: #ffffff; padding: 12px 25px; border-radius: 12px; display: inline-flex; flex-direction: column; align-items: center; box-shadow: 0 8px 25px rgba(0,0,0,0.2); border-bottom: 4px solid #fb641b; margin-bottom: 15px; position: relative; }
     .brand-text-logo { font-size: clamp(28px, 6vw, 48px); font-weight: 900; font-style: italic; font-family: 'Arial Black', Impact, sans-serif; letter-spacing: -1.5px; line-height: 1; display: flex; align-items: center; cursor: pointer; }
-    .features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; width: 100%; box-sizing: border-box; }
+    .features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; width: 100%; box-sizing: border-box; }
     .feature-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 25px 20px; text-align: center; transition: 0.3s; box-shadow: 0 4px 15px rgba(0,0,0,0.05); box-sizing: border-box; }
     .feature-card:hover { transform: translateY(-5px); border-color: #38bdf8; box-shadow: 0 10px 25px rgba(40,116,240,0.15); }
+    .pos-badge { background: #ffeb3b; color: #000; font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 12px; position: absolute; top: -10px; right: -10px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
   `;
 
   if (!isMounted) return null;
@@ -54,7 +56,6 @@ export default function ShopOwnerGuestHomePage() {
       {/* HEADER */}
       <div style={{ background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(15px)', position: 'sticky', top: 0, zIndex: 100, padding: '12px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', width: '100%', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {/* 🔥 Logo click par Home Page */}
           <div onClick={() => router.push('/')} style={{ cursor: 'pointer', fontSize: '24px', fontWeight: '900', fontStyle: 'italic', color: '#0f172a', letterSpacing: '-1px' }}>
             F<span style={{color: '#fb641b'}}>i</span>x<span style={{color: '#2874f0'}}>i</span>fiy <span style={{ color: '#475569', fontWeight: '600', fontSize: '13px', fontStyle: 'normal' }}>Partner</span>
           </div>
@@ -69,25 +70,26 @@ export default function ShopOwnerGuestHomePage() {
         </div>
       </div>
 
-      {/* HERO BANNER (Colorful) */}
+      {/* HERO BANNER */}
       <div className="hero-banner">
         <div style={{ display: 'inline-block', background: 'rgba(255, 255, 255, 0.15)', padding: '6px 16px', borderRadius: '25px', fontSize: '11px', fontWeight: 'bold', letterSpacing: '0.5px', marginBottom: '15px', color: '#fbbf24', border: '1px solid rgba(255, 255, 255, 0.2)', textTransform: 'uppercase' }}>
           🇮🇳 {t("India's No. 1 Digital Byapar Manch for Shop Owners", "दुकानदारों के लिए भारत का नंबर 1 डिजिटल व्यापार मंच")}
         </div>
         <br/>
         <div className="brand-logo-card">
-          {/* 🔥 Logo click par Home Page */}
-          <div onClick={() => router.push('/')} className="brand-text-logo" style={{ cursor: 'pointer' }}>
+          <div onClick={() => router.push('/')} className="brand-text-logo" style={{ cursor: 'pointer', position: 'relative' }}>
             <span style={{ color: '#0a192f' }}>F</span><span style={{ color: '#0a192f' }}>i</span>
             <span style={{ color: '#fb641b', position: 'relative' }}>x<span style={{ position: 'absolute', top: '-10px', right: '-12px', fontSize: 'clamp(16px, 3vw, 24px)' }}>🏬</span></span>
             <span style={{ color: '#0a192f' }}>i</span><span style={{ color: '#0a192f' }}>f</span><span style={{ color: '#0a192f' }}>i</span><span style={{ color: '#0a192f' }}>y</span>
+            {/* 🔥 New POS Animated Badge */}
+            <span className="pos-badge">NEW POS</span>
           </div>
         </div>
         <h1 style={{ fontSize: 'clamp(20px, 4vw, 30px)', fontWeight: 800, margin: '10px 0 12px 0', lineHeight: 1.3, color: '#f8fafc', padding: '0 10px' }}>
-          {t("Apni Dukaan Ko Digital Banayein, Products Add Karein aur Orders Accept Karein! ✨", "अपनी दुकान को डिजिटल बनाएं, प्रोडक्ट्स ऐड करें और ऑर्डर्स एक्सेप्ट करें! ✨")}
+          {t("Apni Dukaan Ko Digital Banayein, POS Se Counter Billing Karein aur Online Orders Accept Karein! ✨", "अपनी दुकान को डिजिटल बनाएं, POS से काउंटर बिलिंग करें और ऑनलाइन ऑर्डर्स एक्सेप्ट करें! ✨")}
         </h1>
         <p style={{ fontSize: 'clamp(13px, 2.5vw, 15px)', opacity: 0.9, maxWidth: '750px', margin: '0 auto 25px auto', color: '#cbd5e1', lineHeight: '1.6', padding: '0 10px' }}>
-          {t("Login karke apni inventory manage karein, naye items joden aur apne kshetra ke hazaron gahakon tak aasani se pahuchein.", "लॉगिन करके अपनी इन्वेंटरी मैनेज करें, नए आइटम्स जोड़ें और अपने क्षेत्र के हजारों ग्राहकों तक आसानी से पहुंचें।")}
+          {t("Login karke apni inventory manage karein, counter par grahakon ko offline bill banakar dein aur apne kshetra ke hazaron online grahakon tak pahuchein.", "लॉगिन करके अपनी इन्वेंटरी मैनेज करें, काउंटर पर ग्राहकों को ऑफलाइन बिल बनाकर दें और अपने क्षेत्र के हजारों ऑनलाइन ग्राहकों तक पहुंचें।")}
         </p>
         <button 
           type="button"
@@ -98,50 +100,64 @@ export default function ShopOwnerGuestHomePage() {
         </button>
       </div>
 
-      {/* HOW IT WORKS SECTION (White Cards) */}
+      {/* HOW IT WORKS SECTION */}
       <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '0 20px 40px 20px', width: '100%', boxSizing: 'border-box' }}>
         <h3 style={{ fontSize: '22px', fontWeight: '900', textAlign: 'center', marginBottom: '25px', color: '#0f172a' }}>
-          🛠️ {t("How It Works for Shop Owners", "दुकानदारों के लिए यह कैसे काम करता है")}
+          🛠️ {t("Grow Offline & Online with Fixifiy", "फिक्सिफ़ाई के साथ ऑफलाइन और ऑनलाइन दोनों बिज़नेस बढ़ाएं")}
         </h3>
 
+        {/* 🔥 Now a 4-Column Grid to include the POS Feature */}
         <div className="features-grid">
+          
           <div className="feature-card">
             <div style={{ fontSize: '40px', marginBottom: '15px' }}>📦</div>
             <h4 style={{ fontSize: '18px', fontWeight: '900', color: '#2874f0', marginBottom: '10px' }}>
-              {t("1. Instant Product Addition", "1. तुरंत प्रोडक्ट जोड़ें")}
+              {t("1. Instant Inventory", "1. आसान इन्वेंटरी")}
             </h4>
             <p style={{ fontSize: '14px', color: '#475569', lineHeight: '1.6', margin: 0 }}>
-              {t("Login karne ke baad apne stock mein naye products, price, stock aur detailed specifications aasaani se add karein.", "लॉगिन करने के बाद अपने स्टॉक में नए प्रोडक्ट्स, प्राइस, स्टॉक और डिटेल्ड स्पेसिफिकेशन्स आसानी से ऐड करें।")}
+              {t("Login karne ke baad apne stock mein naye products aur detailed specifications aasaani se add karein.", "लॉगिन करने के बाद अपने स्टॉक में नए प्रोडक्ट्स और डिटेल्ड स्पेसिफिकेशन्स आसानी से ऐड करें।")}
+            </p>
+          </div>
+
+          {/* 🔥 NEW POS FEATURE CARD */}
+          <div className="feature-card" style={{ border: '1px solid #fbbf24', position: 'relative', overflow: 'hidden' }}>
+            <div style={{ position: 'absolute', top: 0, right: 0, background: '#fbbf24', color: '#000', fontSize: '10px', fontWeight: 'bold', padding: '4px 10px', borderBottomLeftRadius: '10px' }}>NEW</div>
+            <div style={{ fontSize: '40px', marginBottom: '15px' }}>🖨️</div>
+            <h4 style={{ fontSize: '18px', fontWeight: '900', color: '#d97706', marginBottom: '10px' }}>
+              {t("2. Smart POS System", "2. स्मार्ट POS सिस्टम")}
+            </h4>
+            <p style={{ fontSize: '14px', color: '#475569', lineHeight: '1.6', margin: 0 }}>
+              {t("Ab isi software se apni dukaan ke counter par customers ko turant bill (POS) banakar dein. Online & offline stock ek jagah manage karein.", "अब इसी सॉफ्टवेयर से अपनी दुकान के काउंटर पर ग्राहकों को तुरंत बिल (POS) बनाकर दें। ऑनलाइन और ऑफलाइन स्टॉक एक जगह मैनेज करें।")}
             </p>
           </div>
 
           <div className="feature-card">
             <div style={{ fontSize: '40px', marginBottom: '15px' }}>🔔</div>
             <h4 style={{ fontSize: '18px', fontWeight: '900', color: '#16a34a', marginBottom: '10px' }}>
-              {t("2. Accept & Manage Orders", "2. ऑर्डर्स स्वीकार करें और मैनेज करें")}
+              {t("3. Accept Online Orders", "3. ऑनलाइन ऑर्डर्स लें")}
             </h4>
             <p style={{ fontSize: '14px', color: '#475569', lineHeight: '1.6', margin: 0 }}>
-              {t("Gahakon dwara diye gaye naye orders ko dashboard par dekhein aur ek click mein accept karke delivery ke liye tayar karein.", "ग्राहकों द्वारा दिए गए नए ऑर्डर्स को डैशबोर्ड पर देखें और एक क्लिक में एक्सेप्ट करके डिलीवरी के लिए तैयार करें।")}
+              {t("Gahakon dwara diye gaye naye online orders ko dashboard par dekhein aur ek click mein accept karein.", "ग्राहकों द्वारा दिए गए नए ऑनलाइन ऑर्डर्स को डैशबोर्ड पर देखें और एक क्लिक में एक्सेप्ट करें।")}
             </p>
           </div>
 
           <div className="feature-card">
             <div style={{ fontSize: '40px', marginBottom: '15px' }}>💰</div>
             <h4 style={{ fontSize: '18px', fontWeight: '900', color: '#fb641b', marginBottom: '10px' }}>
-              {t("3. Grow Your Local Business", "3. अपने स्थानीय व्यापार को बढ़ाएं")}
+              {t("4. Grow Your Business", "4. अपना व्यापार बढ़ाएं")}
             </h4>
             <p style={{ fontSize: '14px', color: '#475569', lineHeight: '1.6', margin: 0 }}>
-              {t("Fixifiy platform ke zariye bina kisi extra cost ke apne local area mein apni dukan ki bikri ko kai guna badhayein.", "फिक्सिफ़ाई प्लेटफॉर्म के ज़रिए बिना किसी एक्स्ट्रा कॉस्ट के अपने लोकल एरिया में अपनी दुकान की बिक्री को कई गुना बढ़ाएं।")}
+              {t("Fixifiy platform ke zariye bina kisi extra cost ke apne local area mein apni dukan ki bikri ko kai guna badhayein.", "फिक्सिफ़ाई प्लेटफॉर्म के ज़रिए बिना किसी एक्स्ट्रा कॉस्ट के अपने लोकल एरिया में अपनी दुकान की बिक्री को कई गुना बढ़ाएं।")}
             </p>
           </div>
+
         </div>
       </div>
 
-      {/* 🔥 FULLY TRANSLATED FOOTER WITH WORKING LEGAL LINKS 🔥 */}
+      {/* FOOTER */}
       <footer className="no-print" style={{ background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)', color: '#cbd5e1', padding: '50px 20px 30px 20px', marginTop: 'auto', borderTop: '4px solid #fb641b', width: '100%', boxSizing: 'border-box' }}>
         <div style={{ maxWidth: '1100px', margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '30px' }}>
           <div>
-            {/* 🔥 Footer Logo click par Home Page */}
             <div onClick={() => router.push('/')} style={{ cursor: 'pointer', fontSize: '30px', fontWeight: '900', fontStyle: 'italic', fontFamily: 'Arial Black, Impact, sans-serif', color: 'white', marginBottom: '15px', letterSpacing: '-1px' }}>
               F<span style={{ color: 'white' }}>i</span><span style={{ color: '#fb641b' }}>x</span><span style={{ color: 'white' }}>i</span>fiy <span style={{ fontSize: '14px', fontStyle: 'normal', color: '#fb641b' }}>Partner</span>
             </div>
@@ -167,7 +183,6 @@ export default function ShopOwnerGuestHomePage() {
             <div style={{ fontSize: '13px', lineHeight: '1.8', color: '#94a3b8' }}>
               <div>📍 {t("Plot No. 271, Narpa, Hasanpur Main Road, Samastipur, Bihar - 848207", "प्लॉट नंबर 271, नरपा, हसनपुर मेन रोड, समस्तीपुर, बिहार - 848207")}</div>
               <div>📞 {t("Helpline:", "हेल्पलाइन:")} +91 9709740882</div>
-              {/* 🔥 New Email Added */}
               <div>✉️ {t("Email:", "ईमेल:")} support@fixifiy.in, fixifiyindia@gmail.com</div>
             </div>
           </div>
