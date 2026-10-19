@@ -50,6 +50,10 @@ export default function CounterBillingTab({
   const [liveDbProducts, setLiveDbProducts] = useState<any[]>([]);
   const [isSyncingStock, setIsSyncingStock] = useState<boolean>(false);
 
+  // 🔥 DEDICATED SUPABASE `counter_bills` STATE (NEVER DELETES!) 🔥
+  const [dbCounterBills, setDbCounterBills] = useState<any[]>([]);
+  const [isLoadingBills, setIsLoadingBills] = useState<boolean>(false);
+
   // Local Stock Override Map so UI immediately reflects deducted stock after sale
   const [localStockOverrides, setLocalStockOverrides] = useState<Record<string, number>>({});
 
@@ -125,10 +129,10 @@ export default function CounterBillingTab({
       shopObj.owner_upi ||
       '';
     const trimmed = String(candidate).trim();
-    return trimmed.includes('@') ? trimmed : '';
+    return trimmed.includes('@') && trimmed.toLowerCase() !== 'admin@ybl' ? trimmed : '';
   };
 
-  // 🔥 DIRECT SUPABASE STOCK FETCHER (ENSURES REAL `total_stock` IS ALWAYS LOADED) 🔥
+  // 🔥 1. DIRECT SUPABASE STOCK FETCHER (`products` table) 🔥
   const fetchLiveShopStockFromDb = async () => {
     if (!currentShop?.id) return;
     setIsSyncingStock(true);
@@ -150,17 +154,66 @@ export default function CounterBillingTab({
     }
   };
 
+  // 🔥 2. DIRECT SUPABASE COUNTER BILLS FETCHER (`counter_bills` table) 🔥
+  const fetchCounterBillsFromDb = async () => {
+    if (!currentShop?.id) return;
+    setIsLoadingBills(true);
+    try {
+      const { data, error } = await supabase
+        .from('counter_bills')
+        .select('*')
+        .eq('shop_id', String(currentShop.id))
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        const normalized = data.map((row: any) => ({
+          ...row,
+          order_no: row.bill_no,
+          billNo: row.bill_no,
+          subTotal: Number(row.subtotal || 0),
+          discountAmt: Number(row.discount || 0),
+          labourCharge: Number(row.labour_charge || 0),
+          transportCharge: Number(row.transport_charge || 0),
+          isGstBill: Boolean(row.is_gst_bill),
+          gstPercent: Number(row.gst_percent || 0),
+          gstAmt: Number(row.gst_amount || 0),
+          shopGstNo: row.shop_gst_no || '',
+          custGstNo: row.customer_gst_no || '',
+          grandTotal: Number(row.grand_total || 0),
+          total_amount: Number(row.grand_total || 0),
+          cartItems: row.items || [],
+          items: row.items || [],
+          paymentMethod: row.payment_method || 'Cash',
+          payment_mode: row.payment_mode || `Counter POS - ${row.payment_method || 'Cash'}`,
+          type: 'counter_sale',
+          custName: row.customer_name || 'Walk-in Customer',
+          customer_name: row.customer_name || 'Walk-in Customer',
+          custPhone: row.customer_phone || '',
+          phone: row.customer_phone || '',
+          custAddress: row.customer_address || '',
+          address: row.customer_address || '',
+          shopUpiId: row.shop_upi_id || ''
+        }));
+        setDbCounterBills(normalized);
+      }
+    } catch (err) {
+      console.warn('Counter bills load error:', err);
+    } finally {
+      setIsLoadingBills(false);
+    }
+  };
+
   useEffect(() => {
     fetchAdminUpiAndPlanStatus();
     if (currentShop?.id) {
       fetchLiveShopStockFromDb();
+      fetchCounterBillsFromDb();
 
-      // Strictly load Shop Owner's own UPI from Shop Profile or localStorage
       const profileUpi =
         extractProfileShopUpi(currentShop) ||
         localStorage.getItem(`fixifiy_shop_upi_${currentShop.id}`) ||
         '';
-      setShopUpiId(profileUpi.includes('@') ? profileUpi.trim() : '');
+      setShopUpiId(profileUpi.includes('@') && profileUpi.toLowerCase() !== 'admin@ybl' ? profileUpi.trim() : '');
 
       const savedGst =
         currentShop?.gst_no ||
@@ -176,9 +229,9 @@ export default function CounterBillingTab({
         if (savedLocal) setLocalCounterBills(JSON.parse(savedLocal));
       } catch {}
 
-      // 🔥 REAL-TIME SUPABASE SUBSCRIPTION FOR STOCK CHANGES 🔥
-      const stockChannel = supabase
-        .channel(`pos_stock_sync_${currentShop.id}`)
+      // 🔥 REAL-TIME SUPABASE SUBSCRIPTION FOR STOCK & COUNTER BILLS 🔥
+      const posChannel = supabase
+        .channel(`pos_live_channel_${currentShop.id}`)
         .on(
           'postgres_changes',
           {
@@ -192,10 +245,22 @@ export default function CounterBillingTab({
             if (typeof fetchProducts === 'function') fetchProducts();
           }
         )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'counter_bills',
+            filter: `shop_id=eq.${currentShop.id}`
+          },
+          () => {
+            fetchCounterBillsFromDb();
+          }
+        )
         .subscribe();
 
       return () => {
-        supabase.removeChannel(stockChannel);
+        supabase.removeChannel(posChannel);
       };
     }
     if (mode === 'delivery_partners') {
@@ -203,7 +268,6 @@ export default function CounterBillingTab({
     }
   }, [currentShop?.id, currentShop?.upi_id, currentShop?.upi, mode]);
 
-  // Whenever parent `products` prop updates (e.g. edited in Stock Room Tab), sync immediately
   useEffect(() => {
     if (Array.isArray(products) && products.length > 0 && currentShop?.id) {
       const shopItems = products.filter((p: any) => String(p.shop_id) === String(currentShop.id));
@@ -548,7 +612,6 @@ export default function CounterBillingTab({
     return Array.from(map.values());
   }, [products, liveDbProducts, currentShop?.id]);
 
-  // Strictly read `total_stock` from Stock Room (NO DUMMY 999)
   const getBaseProductStock = (p: any): number => {
     if (!p) return 0;
     if (localStockOverrides[String(p.id)] !== undefined) {
@@ -869,7 +932,7 @@ export default function CounterBillingTab({
   };
 
   // ==========================================================
-  // 🧾 SAVE COUNTER BILL & DEDUCT `total_stock` + ADD `sold_quantity`
+  // 🧾 SAVE COUNTER BILL IN `counter_bills` + `orders` & DEDUCT `total_stock`
   // ==========================================================
   const handleGenerateCounterBill = async () => {
     if (cart.length === 0) return alert('❌ कृपया बिल बनाने के लिए बाईं तरफ से कम से कम 1 सामान पर क्लिक करें!');
@@ -891,7 +954,7 @@ export default function CounterBillingTab({
 
       const newOverrides: Record<string, number> = { ...localStockOverrides };
 
-      // 🔥 DEDUCT `total_stock` AND INCREMENT `sold_quantity` IN SUPABASE 🔥
+      // 🔥 1. DEDUCT `total_stock` AND INCREMENT `sold_quantity` IN SUPABASE 🔥
       for (const item of cart) {
         if (!item.isCustom) {
           const { data: freshProd } = await supabase
@@ -960,6 +1023,39 @@ export default function CounterBillingTab({
         total: c.price * c.qty
       }));
 
+      // 🔥 2. SAVE PERMANENTLY IN DEDICATED `counter_bills` TABLE 🔥
+      const counterBillPayload = {
+        bill_no: billNo,
+        shop_id: String(currentShop.id),
+        shop_name: currentShop.name || '',
+        customer_name: finalCustName,
+        customer_phone: finalCustPhone,
+        customer_address: finalCustAddress,
+        items: structuredItems,
+        subtotal: subTotal,
+        discount: discountAmt,
+        labour_charge: labourAmt,
+        transport_charge: transportAmt,
+        is_gst_bill: isGstBillEnabled,
+        gst_percent: activeGstRate,
+        gst_amount: gstAmt,
+        shop_gst_no: effectiveGstNo,
+        customer_gst_no: custGstNumber.trim(),
+        grand_total: grandTotal,
+        payment_method: paymentMethod,
+        payment_mode: `Counter POS - ${paymentMethod}`,
+        shop_upi_id: verifiedShopUpi,
+        status: 'completed',
+        created_at: nowIso
+      };
+
+      const { data: savedCounterRow } = await supabase
+        .from('counter_bills')
+        .insert(counterBillPayload)
+        .select()
+        .maybeSingle();
+
+      // 🔥 3. ALSO INSERT INTO `orders` SO SALES LEDGER RECEIVES IT 🔥
       const billMetaMsg = {
         sender: 'shop_owner',
         type: 'counter_bill',
@@ -1016,8 +1112,7 @@ export default function CounterBillingTab({
           total_amount: grandTotal,
           payment_mode: `Counter POS - ${paymentMethod}`,
           status: 'completed',
-          created_at: nowIso,
-          messages: [billMetaMsg]
+          created_at: nowIso
         };
         const { data: retryOrder } = await supabase.from('orders').insert(minimalPayload).select().single();
         savedOrder = retryOrder;
@@ -1026,7 +1121,7 @@ export default function CounterBillingTab({
       }
 
       const completeBillRecord = {
-        ...(savedOrder || { id: `local_${Date.now()}`, ...orderPayload }),
+        ...(savedCounterRow || savedOrder || { id: `local_${Date.now()}`, ...orderPayload }),
         order_no: billNo,
         billNo,
         subTotal,
@@ -1055,6 +1150,8 @@ export default function CounterBillingTab({
         created_at: nowIso
       };
 
+      setDbCounterBills(prev => [completeBillRecord, ...prev]);
+
       if (setOrders) {
         setOrders((prev: any[]) => [completeBillRecord, ...(prev || [])]);
       }
@@ -1065,6 +1162,7 @@ export default function CounterBillingTab({
       } catch {}
 
       await fetchLiveShopStockFromDb();
+      await fetchCounterBillsFromDb();
       if (typeof fetchProducts === 'function') fetchProducts(true);
       if (typeof fetchOrders === 'function') fetchOrders(currentShop.id, true);
 
@@ -1089,20 +1187,20 @@ export default function CounterBillingTab({
     const meta = Array.isArray(bill.messages)
       ? bill.messages.find((m: any) => m?.type === 'counter_bill') || {}
       : {};
-    const subTotalVal = Number(bill.subTotal ?? meta.subtotal ?? bill.total_amount ?? 0);
-    const discountVal = Number(bill.discountAmt ?? meta.discount ?? 0);
-    const labourVal = Number(bill.labourCharge ?? meta.labourCharge ?? 0);
-    const transportVal = Number(bill.transportCharge ?? meta.transportCharge ?? bill.delivery_charge ?? 0);
-    const isGstVal = Boolean(bill.isGstBill ?? meta.isGstBill ?? (Number(bill.gstAmt ?? meta.gstAmt ?? 0) > 0));
-    const gstRateVal = Number(bill.gstPercent ?? meta.gstPercent ?? (isGstVal ? 18 : 0));
-    const gstAmtVal = Number(bill.gstAmt ?? meta.gstAmt ?? 0);
+    const subTotalVal = Number(bill.subTotal ?? bill.subtotal ?? meta.subtotal ?? bill.total_amount ?? bill.grand_total ?? 0);
+    const discountVal = Number(bill.discountAmt ?? bill.discount ?? meta.discount ?? 0);
+    const labourVal = Number(bill.labourCharge ?? bill.labour_charge ?? meta.labourCharge ?? 0);
+    const transportVal = Number(bill.transportCharge ?? bill.transport_charge ?? meta.transportCharge ?? bill.delivery_charge ?? 0);
+    const isGstVal = Boolean(bill.isGstBill ?? bill.is_gst_bill ?? meta.isGstBill ?? (Number(bill.gstAmt ?? bill.gst_amount ?? meta.gstAmt ?? 0) > 0));
+    const gstRateVal = Number(bill.gstPercent ?? bill.gst_percent ?? meta.gstPercent ?? (isGstVal ? 18 : 0));
+    const gstAmtVal = Number(bill.gstAmt ?? bill.gst_amount ?? meta.gstAmt ?? 0);
     const shopGstVal = String(
-      bill.shopGstNo || meta.shopGstNo || shopGstNumber || currentShop?.gst_no || ''
+      bill.shopGstNo || bill.shop_gst_no || meta.shopGstNo || shopGstNumber || currentShop?.gst_no || ''
     ).trim();
-    const custGstVal = String(bill.custGstNo || meta.custGstNo || '').trim();
-    const addrVal = String(bill.custAddress || bill.address || meta.custAddress || '').trim();
-    const totalVal = Number(bill.grandTotal ?? bill.total_amount ?? 0);
-    const billShopUpiVal = String(bill.shopUpiId || meta.shopUpiId || '').trim();
+    const custGstVal = String(bill.custGstNo || bill.customer_gst_no || meta.custGstNo || '').trim();
+    const addrVal = String(bill.custAddress || bill.customer_address || bill.address || meta.custAddress || '').trim();
+    const totalVal = Number(bill.grandTotal ?? bill.grand_total ?? bill.total_amount ?? 0);
+    const billShopUpiVal = String(bill.shopUpiId || bill.shop_upi_id || meta.shopUpiId || '').trim();
 
     return {
       subTotalVal,
@@ -1121,12 +1219,13 @@ export default function CounterBillingTab({
   };
 
   // ==========================================================
-  // 🚫 STRICT SEPARATION: COUNTER SALES VS ONLINE ORDERS
+  // 🚫 STRICT SEPARATION: COUNTER SALES (`counter_bills`) VS ONLINE ORDERS
   // ==========================================================
   const isOrderCounterSale = (o: any): boolean => {
     return (
       o.type === 'counter_sale' ||
-      String(o.order_no || o.billNo || '').startsWith('POS-') ||
+      Boolean(o.bill_no) ||
+      String(o.order_no || o.billNo || o.bill_no || '').startsWith('POS-') ||
       String(o.payment_mode || '').toLowerCase().includes('counter pos') ||
       String(o.address || '').toLowerCase().includes('counter') ||
       (Array.isArray(o.messages) && o.messages.some((m: any) => m?.type === 'counter_bill'))
@@ -1134,7 +1233,7 @@ export default function CounterBillingTab({
   };
 
   const getPayBucket = (o: any): 'cash' | 'upi' | 'khata' => {
-    const pmRaw = String(o.paymentMethod || o.payment_mode || '').toLowerCase();
+    const pmRaw = String(o.paymentMethod || o.payment_method || o.payment_mode || '').toLowerCase();
     if (
       pmRaw.includes('upi') ||
       pmRaw.includes('online') ||
@@ -1151,23 +1250,30 @@ export default function CounterBillingTab({
     return 'cash';
   };
 
+  // 🔥 MERGE `dbCounterBills` (FROM `counter_bills` TABLE) + `orders` + `localCounterBills` 🔥
   const allCounterSalesOnly = useMemo(() => {
-    const dbCounter = (orders || []).filter(
+    const dbOrdersCounter = (orders || []).filter(
       (o: any) => String(o.shop_id) === String(currentShop?.id) && isOrderCounterSale(o)
     );
     const map = new Map<string, any>();
+
     localCounterBills.forEach(lb => {
-      const key = String(lb.order_no || lb.billNo || lb.id);
+      const key = String(lb.bill_no || lb.order_no || lb.billNo || lb.id);
       map.set(key, lb);
     });
-    dbCounter.forEach((dbo: any) => {
+    dbOrdersCounter.forEach((dbo: any) => {
       const key = String(dbo.order_no || dbo.id);
       map.set(key, { ...map.get(key), ...dbo });
     });
+    dbCounterBills.forEach((cb: any) => {
+      const key = String(cb.bill_no || cb.order_no || cb.billNo || cb.id);
+      map.set(key, { ...map.get(key), ...cb });
+    });
+
     return Array.from(map.values()).sort(
       (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
     );
-  }, [orders, localCounterBills, currentShop?.id]);
+  }, [dbCounterBills, orders, localCounterBills, currentShop?.id]);
 
   const allOnlineSalesOnly = useMemo(() => {
     return (orders || [])
@@ -1207,8 +1313,8 @@ export default function CounterBillingTab({
       const passSearch =
         !q ||
         String(o.customer_name || o.custName || '').toLowerCase().includes(q) ||
-        String(o.phone || o.custPhone || '').toLowerCase().includes(q) ||
-        String(o.order_no || o.billNo || o.id || '').toLowerCase().includes(q);
+        String(o.phone || o.custPhone || o.customer_phone || '').toLowerCase().includes(q) ||
+        String(o.bill_no || o.order_no || o.billNo || o.id || '').toLowerCase().includes(q);
 
       return passDate && passPay && passSearch;
     });
@@ -1224,7 +1330,7 @@ export default function CounterBillingTab({
     let khataCount = 0;
 
     filteredActiveRecords.forEach((o: any) => {
-      const amt = Number(o.total_amount || o.grandTotal || 0);
+      const amt = Number(o.grand_total || o.total_amount || o.grandTotal || 0);
       const bucket = getPayBucket(o);
       totalAmt += amt;
       if (bucket === 'cash') {
@@ -1304,7 +1410,7 @@ export default function CounterBillingTab({
       .join('%0A');
 
     const d = extractBillDetails(bill);
-    const bNo = bill.billNo || bill.order_no || bill.id;
+    const bNo = bill.bill_no || bill.billNo || bill.order_no || bill.id;
     const { activeUpi, upiUri } = getShopOwnerQrData(d.totalVal, String(bNo), d.billShopUpiVal);
 
     const msg =
@@ -1329,14 +1435,14 @@ export default function CounterBillingTab({
       (d.labourVal > 0 ? `*👷 लेबर चार्ज (Labour):* +₹${d.labourVal}%0A` : '') +
       (d.transportVal > 0 ? `*🚚 ट्रांसपोर्ट / भाड़ा (Transport):* +₹${d.transportVal}%0A` : '') +
       `💰 *कुल देय बिल (Grand Total): ₹${d.totalVal}*%0A` +
-      `💳 *पेमेंट मोड:* ${bill.paymentMethod || bill.payment_mode}%0A` +
+      `💳 *पेमेंट मोड:* ${bill.paymentMethod || bill.payment_method || bill.payment_mode}%0A` +
       (activeUpi
         ? `🏦 *Shop UPI ID:* ${activeUpi}%0A📲 *Pay Link:* ${encodeURIComponent(upiUri)}%0A`
         : '') +
       `--------------------------------%0A` +
       `🙏 धन्यवाद!`;
 
-    const cleanPhone = String(bill.custPhone || bill.phone || '').replace(/\D/g, '');
+    const cleanPhone = String(bill.custPhone || bill.customer_phone || bill.phone || '').replace(/\D/g, '');
     const waPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
     const waUrl = waPhone ? `https://wa.me/${waPhone}?text=${msg}` : `https://wa.me/?text=${msg}`;
     window.open(waUrl, '_blank');
@@ -1356,7 +1462,7 @@ export default function CounterBillingTab({
     }
 
     const d = extractBillDetails(bill);
-    const bNo = bill.billNo || bill.order_no || bill.id;
+    const bNo = bill.bill_no || bill.billNo || bill.order_no || bill.id;
     const { activeUpi, qrImg } = getShopOwnerQrData(d.totalVal, String(bNo), d.billShopUpiVal);
 
     const itemsHtml = rawItems
@@ -1405,14 +1511,14 @@ export default function CounterBillingTab({
             <div style="max-width:60%;">
               <p><strong>Bill No:</strong> #${bNo}</p>
               <p><strong>Customer:</strong> ${bill.custName || bill.customer_name}</p>
-              ${bill.custPhone || bill.phone ? `<p><strong>Mob:</strong> ${bill.custPhone || bill.phone}</p>` : ''}
+              ${bill.custPhone || bill.customer_phone || bill.phone ? `<p><strong>Mob:</strong> ${bill.custPhone || bill.customer_phone || bill.phone}</p>` : ''}
               ${d.addrVal ? `<p><strong>Address:</strong> ${d.addrVal}</p>` : ''}
               ${d.custGstVal ? `<p><strong>Buyer GSTIN:</strong> ${d.custGstVal}</p>` : ''}
             </div>
             <div style="text-align:right;">
               <p><strong>Date:</strong> ${new Date(bill.created_at || Date.now()).toLocaleDateString('en-IN')}</p>
               <p><strong>Time:</strong> ${new Date(bill.created_at || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p>
-              <p><strong>Pay Mode:</strong> ${bill.paymentMethod || bill.payment_mode}</p>
+              <p><strong>Pay Mode:</strong> ${bill.paymentMethod || bill.payment_method || bill.payment_mode}</p>
             </div>
           </div>
           <table>
@@ -1508,12 +1614,12 @@ export default function CounterBillingTab({
 
       csvRows.push(
         [
-          `"${o.order_no || o.billNo || o.id}"`,
+          `"${o.bill_no || o.order_no || o.billNo || o.id}"`,
           `"${new Date(o.created_at || Date.now()).toLocaleString('en-IN')}"`,
           `"${o.customer_name || o.custName || 'Walk-in'}"`,
-          `"${o.phone || o.custPhone || ''}"`,
+          `"${o.customer_phone || o.phone || o.custPhone || ''}"`,
           `"${d.addrVal.replace(/"/g, '""')}"`,
-          `"${o.paymentMethod || o.payment_mode || 'Cash'}"`,
+          `"${o.paymentMethod || o.payment_method || o.payment_mode || 'Cash'}"`,
           `"${bucket === 'upi' ? 'Shop Owner Bank/UPI' : bucket === 'cash' ? 'Cash in Hand' : 'Khata Due'}"`,
           `"${d.labourVal}"`,
           `"${d.transportVal}"`,
@@ -1565,9 +1671,9 @@ export default function CounterBillingTab({
         return `
           <tr>
             <td>${i + 1}</td>
-            <td>#${o.order_no || o.billNo || o.id}</td>
+            <td>#${o.bill_no || o.order_no || o.billNo || o.id}</td>
             <td>${new Date(o.created_at || Date.now()).toLocaleString('en-IN')}</td>
-            <td>${o.customer_name || o.custName || 'Walk-in'}<br/><small>${o.phone || ''} ${d.addrVal ? `| ${d.addrVal}` : ''}</small></td>
+            <td>${o.customer_name || o.custName || 'Walk-in'}<br/><small>${o.customer_phone || o.phone || ''} ${d.addrVal ? `| ${d.addrVal}` : ''}</small></td>
             <td>${itemsText}</td>
             <td>${bucket === 'upi' ? '🏦 Shop Bank/UPI' : bucket === 'cash' ? '💵 Cash' : '📒 Khata Due'}</td>
             <td style="text-align:right;font-weight:bold;">₹${d.totalVal}</td>
@@ -2020,7 +2126,10 @@ export default function CounterBillingTab({
             </button>
 
             <button
-              onClick={() => setPosSubView('counter_history')}
+              onClick={() => {
+                setPosSubView('counter_history');
+                fetchCounterBillsFromDb();
+              }}
               style={{
                 padding: '8px 13px',
                 borderRadius: '8px',
@@ -2092,7 +2201,7 @@ export default function CounterBillingTab({
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
             <div>
               <span style={{ background: '#4ade80', color: '#064e3b', padding: '2px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '900' }}>
-                ✅ {lastGeneratedBill.isGstBill ? 'GST TAX INVOICE' : 'काउंटर बिल'} सेव हो गया (#{lastGeneratedBill.billNo})
+                ✅ {lastGeneratedBill.isGstBill ? 'GST TAX INVOICE' : 'काउंटर बिल'} डेटाबेस में सेव हो गया (#{lastGeneratedBill.billNo})
               </span>
               <h3 style={{ margin: '5px 0 0 0', fontSize: '16px', color: 'white' }}>
                 👤 {lastGeneratedBill.custName} — कुल रकम: <span style={{ color: '#4ade80' }}>₹{lastGeneratedBill.grandTotal}</span> ({lastGeneratedBill.paymentMethod})
@@ -2884,7 +2993,7 @@ export default function CounterBillingTab({
                 }}
               >
                 {isGeneratingBill
-                  ? '⏳ बिल सेव व स्टॉक माइनस हो रहा है...'
+                  ? '⏳ बिल डेटाबेस में सेव व स्टॉक माइनस हो रहा है...'
                   : `✅ ${isGstBillEnabled ? 'GST बिल' : 'बिल'} सेव करें व Print / WhatsApp करें (₹${grandTotal})`}
               </button>
             </div>
@@ -2935,17 +3044,25 @@ export default function CounterBillingTab({
             <div>
               <h3 style={{ margin: 0, fontSize: '17px', color: '#fff', fontWeight: '900' }}>
                 {posSubView === 'counter_history'
-                  ? '🏪 सिर्फ दुकान काउंटर बिक्री का अलग हिसाब (Counter POS Only)'
+                  ? '🏪 सिर्फ दुकान काउंटर बिक्री का अलग हिसाब (Supabase counter_bills Database)'
                   : '🌐 सिर्फ ऑनलाइन ऐप आर्डर का अलग हिसाब (Online App Orders Only)'}
               </h3>
               <p style={{ margin: '3px 0 0 0', fontSize: '11.5px', color: '#cbd5e1' }}>
                 {posSubView === 'counter_history'
-                  ? 'यहाँ केवल दुकान के काउंटर से काटे गए बिल हैं (ऑनलाइन आर्डर मिक्स नहीं हैं)।'
+                  ? 'यहाँ केवल दुकान के काउंटर से काटे गए बिल हैं जो डेटाबेस में परमानेंट सेव हैं।'
                   : 'यहाँ केवल ऑनलाइन ऐप से आए आर्डर हैं (काउंटर बिल मिक्स नहीं हैं)।'}
               </p>
             </div>
 
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {posSubView === 'counter_history' && (
+                <button
+                  onClick={fetchCounterBillsFromDb}
+                  style={{ background: '#0284c7', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '8px', fontWeight: '900', fontSize: '11.5px', cursor: 'pointer' }}
+                >
+                  {isLoadingBills ? '⏳ लोड हो रहा है...' : '🔄 रिफ्रेश हिस्ट्री'}
+                </button>
+              )}
               <button
                 onClick={() => setShowProductSummaryModal(!showProductSummaryModal)}
                 style={{ background: '#f59e0b', color: '#0f172a', border: 'none', padding: '8px 12px', borderRadius: '8px', fontWeight: '900', fontSize: '11.5px', cursor: 'pointer' }}
@@ -3112,7 +3229,7 @@ export default function CounterBillingTab({
 
                     return (
                       <div
-                        key={sale.id || sale.order_no}
+                        key={sale.id || sale.bill_no || sale.order_no}
                         style={{
                           background: '#1e293b',
                           padding: '10px 14px',
@@ -3128,7 +3245,7 @@ export default function CounterBillingTab({
                         <div style={{ flex: 1, minWidth: '200px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                             <span style={{ fontSize: '14px', fontWeight: '900', color: 'white' }}>
-                              #{sale.order_no || sale.billNo || sale.id}
+                              #{sale.bill_no || sale.order_no || sale.billNo || sale.id}
                             </span>
                             {d.isGstVal && (
                               <span style={{ background: '#065f46', color: '#4ade80', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>
@@ -3150,7 +3267,7 @@ export default function CounterBillingTab({
                           </div>
 
                           <div style={{ fontSize: '12.5px', color: '#e2e8f0', marginTop: '3px', fontWeight: 'bold' }}>
-                            👤 {sale.customer_name || sale.custName || 'Walk-in'} {sale.phone || sale.custPhone ? `(${sale.phone || sale.custPhone})` : ''}
+                            👤 {sale.customer_name || sale.custName || 'Walk-in'} {sale.customer_phone || sale.phone || sale.custPhone ? `(${sale.customer_phone || sale.phone || sale.custPhone})` : ''}
                             {d.addrVal ? <span style={{ color: '#94a3b8', fontWeight: 'normal' }}> | 📍 {d.addrVal}</span> : null}
                           </div>
 

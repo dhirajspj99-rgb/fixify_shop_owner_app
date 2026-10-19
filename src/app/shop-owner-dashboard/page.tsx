@@ -51,7 +51,7 @@ export default function ShopOwnerDashboard() {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifMenu, setShowNotifMenu] = useState(false);
   
-  // 🎯 USED FOR ROUTING TO SPECIFIC ORDER FROM WALLET OR NOTIFICATIONS
+  // 🎯 USED FOR ROUTING TO SPECIFIC ORDER FROM WALLET, NOTIFICATIONS, OR SALES LEDGER
   const [targetOrderId, setTargetOrderId] = useState<any>(null);
   
   const [openAdminChatTrigger, setOpenAdminChatTrigger] = useState(0);
@@ -94,7 +94,7 @@ export default function ShopOwnerDashboard() {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentShop]); // Added currentShop dependency to ensure handleLogout has access to the latest shop state
+  }, [currentShop]);
 
   // ==========================================
   // ⚡ FAST & SAFE FETCH FUNCTIONS
@@ -347,6 +347,31 @@ export default function ShopOwnerDashboard() {
     };
   }, [currentShop?.id, playAlertSound]);
 
+  // 🔥 SMART TAB CHANGE HANDLER (MAPS 'pos' -> 'counter_pos' AUTOMATICALLY) 🔥
+  const handleTabChange = useCallback((tab: string) => {
+    const normalizedTab = tab === 'pos' ? 'counter_pos' : tab;
+    setActiveTab(normalizedTab);
+    window.history.pushState(null, '', window.location.href);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  // 🔥 DIRECT REDIRECT FROM SALES LEDGER TO SPECIFIC ORDER OR POS TAB 🔥
+  const handleSelectOrderFromLedger = useCallback((orderObj: any) => {
+    if (!orderObj) return;
+    const isCounterSale =
+      orderObj.type === 'counter_sale' ||
+      Boolean(orderObj.bill_no) ||
+      String(orderObj.order_no || orderObj.billNo || '').startsWith('POS-') ||
+      String(orderObj.payment_mode || '').toLowerCase().includes('counter pos');
+
+    if (isCounterSale) {
+      handleTabChange('counter_pos');
+    } else {
+      setTargetOrderId(orderObj.id);
+      handleTabChange('orders');
+    }
+  }, [handleTabChange]);
+
   const handleNotificationClick = (notif: any) => {
     setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, isRead: true } : n));
     setShowNotifMenu(false);
@@ -361,7 +386,6 @@ export default function ShopOwnerDashboard() {
 
   const unreadCount = notifications.filter(n => !n.isRead).length;
 
-  // 🔥 TRIGGER NIGARNI FOR MANUAL REFRESH 🔥
   const handleManualRefresh = async () => {
     if (!currentShop?.id) return;
     await Promise.all([
@@ -375,12 +399,6 @@ export default function ShopOwnerDashboard() {
     alert("✅ Data Successfully Refreshed from Server!");
   };
 
-  const handleTabChange = (tab: string) => {
-    setActiveTab(tab);
-    window.history.pushState(null, '', window.location.href);
-  };
-
-  // 🔥 TRIGGER NIGARNI FOR LOGOUT 🔥
   const handleLogout = async () => { 
     if (currentShop?.id) {
        await logNigraniActivity(currentShop, 'SHOP_LOGOUT', 'Shop owner signed out of the dashboard.');
@@ -475,7 +493,18 @@ export default function ShopOwnerDashboard() {
 
       {/* TABS CONTENT */}
       <div style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', width: '100%', boxSizing: 'border-box' }}>
-        {(activeTab === 'sales' || activeTab === 'stock') && <SalesAndStockTab activeTab={activeTab} orders={orders} currentShop={currentShop} products={products} fetchProducts={fetchProducts} fetchOrders={fetchOrders} />}
+        {(activeTab === 'sales' || activeTab === 'stock') && (
+          <SalesAndStockTab
+            activeTab={activeTab}
+            setActiveTab={handleTabChange}
+            onSelectOrderFromLedger={handleSelectOrderFromLedger}
+            orders={orders}
+            currentShop={currentShop}
+            products={products}
+            fetchProducts={fetchProducts}
+            fetchOrders={fetchOrders}
+          />
+        )}
         
         {activeTab === 'counter_pos' && (
           <CounterBillingTab
@@ -504,7 +533,18 @@ export default function ShopOwnerDashboard() {
         )}
 
         {/* 🎯 TARGET ORDER ID PROPS PASSED HERE */}
-        {activeTab === 'orders' && <OrdersTab targetOrderId={targetOrderId} setTargetOrderId={setTargetOrderId} orders={orders} setOrders={setOrders} products={products} currentShop={currentShop} fetchOrders={fetchOrders} fetchProducts={fetchProducts} />}
+        {activeTab === 'orders' && (
+          <OrdersTab
+            targetOrderId={targetOrderId}
+            setTargetOrderId={setTargetOrderId}
+            orders={orders}
+            setOrders={setOrders}
+            products={products}
+            currentShop={currentShop}
+            fetchOrders={fetchOrders}
+            fetchProducts={fetchProducts}
+          />
+        )}
         
         {activeTab === 'inventory' && <InventoryTab products={products} fetchProducts={fetchProducts} currentShop={currentShop} />}
         

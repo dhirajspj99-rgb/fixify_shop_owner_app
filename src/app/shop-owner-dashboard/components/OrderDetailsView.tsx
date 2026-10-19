@@ -66,8 +66,23 @@ export default function OrderDetailsView({
   now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
   const minDateTime = now.toISOString().slice(0, 16); 
 
-  // 🔥 DYNAMIC COMMISSION STATES 🔥
+  // ==============================================================
+  // 🔥 DYNAMIC COMMISSION STATES (`app_settings` + AUTO 20% FALLBACK) 🔥
+  // ==============================================================
+  const [defaultCommissionPct, setDefaultCommissionPct] = useState<number>(20); // Auto 20% Fallback
   const [categoryRates, setCategoryRates] = useState<Record<string, number>>({});
+
+  // Helper: Converts any DB value ("15%", 15, 0.15, "20") into exact Percentage number (e.g. 20 for 20%)
+  const toPercentNumber = (val: any, fallbackPct = 20): number => {
+    if (val === undefined || val === null || val === '') return fallbackPct;
+    const cleaned = String(val).replace('%', '').trim();
+    const num = Number(cleaned);
+    if (isNaN(num) || num <= 0) return fallbackPct;
+    if (num > 0 && num < 1 && String(val).includes('.')) {
+      return Number((num * 100).toFixed(2));
+    }
+    return num;
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -75,30 +90,49 @@ export default function OrderDetailsView({
       try {
         const { data } = await supabase
           .from('app_settings')
-          .select('category_commissions, delivery_boy_upi, upi_id, upi, company_upi, admin_upi, shop_self_delivery_fee')
+          .select('*')
           .limit(1)
-          .single();
+          .maybeSingle();
 
         if (isMounted && data) {
+          // 1. Global Default Commission Rate from app_settings (Fallback = 20%)
+          const rawGlobalRate =
+            data.commission_rate ??
+            data.admin_commission ??
+            data.default_commission ??
+            20;
+          const globalPct = toPercentNumber(rawGlobalRate, 20);
+          setDefaultCommissionPct(globalPct);
+
+          // 2. Category-wise Commission Rates from app_settings
           if (data.category_commissions) {
             let parsedCats = data.category_commissions;
             if (typeof parsedCats === 'string') {
-               try { parsedCats = JSON.parse(parsedCats); } catch(e){}
+              try { parsedCats = JSON.parse(parsedCats); } catch (e) {}
             }
             const normalizedRates: Record<string, number> = {};
             if (Array.isArray(parsedCats)) {
-                parsedCats.forEach((item: any) => {
-                    const catName = String(item.category || item.name || '').trim().toLowerCase();
-                    const rateVal = Number(item.rate || item.commission || item.percentage || item.value || 0);
-                    if (catName) normalizedRates[catName] = rateVal;
-                });
+              parsedCats.forEach((item: any) => {
+                const catName = String(item.category || item.name || item.title || '').trim().toLowerCase();
+                const rawRate = item.rate ?? item.commission ?? item.commission_rate ?? item.percentage ?? item.value;
+                if (catName && rawRate !== undefined && rawRate !== null && rawRate !== '') {
+                  normalizedRates[catName] = toPercentNumber(rawRate, 20);
+                }
+              });
             } else if (typeof parsedCats === 'object' && parsedCats !== null) {
-                Object.keys(parsedCats).forEach(k => {
-                   normalizedRates[k.trim().toLowerCase()] = Number(parsedCats[k]);
-                });
+              Object.keys(parsedCats).forEach(k => {
+                const cleanKey = k.trim().toLowerCase();
+                const val = parsedCats[k];
+                if (typeof val === 'object' && val !== null) {
+                  normalizedRates[cleanKey] = toPercentNumber(val.rate ?? val.commission ?? val.percentage ?? val.value, 20);
+                } else if (val !== undefined && val !== null && val !== '') {
+                  normalizedRates[cleanKey] = toPercentNumber(val, 20);
+                }
+              });
             }
             setCategoryRates(normalizedRates);
           }
+
           const upi = data.delivery_boy_upi || data.upi_id || data.upi || data.company_upi || data.admin_upi;
           if (upi) setAdminUpi(upi);
           if (data.shop_self_delivery_fee !== undefined) setSelfDeliveryFee(Number(data.shop_self_delivery_fee) || 20);
@@ -115,11 +149,9 @@ export default function OrderDetailsView({
   const paymentModeRaw = String(selectedOrder?.payment_mode || selectedOrder?.payment_method || '').toUpperCase();
   const paymentStatusRaw = String(selectedOrder?.payment_status || '').toLowerCase();
   
-  // Rule: If it's NOT explicitly Cash/COD, it is treated as an Online/Prepaid Order.
   const isCodOrder = paymentModeRaw.includes('COD') || paymentModeRaw.includes('CASH') || paymentModeRaw === 'PAY ON DELIVERY';
   const isUpiOrder = !isCodOrder && paymentModeRaw !== ''; 
 
-  // Rule: Check boolean OR string values from database to ensure it catches 'true', 'paid', or 'verified'
   const isVerified = 
     selectedOrder?.is_payment_verified === true || 
     String(selectedOrder?.is_payment_verified).toLowerCase() === 'true' ||
@@ -131,7 +163,6 @@ export default function OrderDetailsView({
 
   const orderStatusStr = (selectedOrder?.status || '').toLowerCase().trim();
   const isOrderAlreadyAccepted = ['accepted', 'processing', 'out_for_delivery', 'shipped', 'transit', 'completed', 'delivered'].some(st => orderStatusStr.includes(st));
-
 
   const getProductDetailsArray = (order: any) => {
     if (!order) return [];
@@ -178,44 +209,62 @@ export default function OrderDetailsView({
     });
   };
 
+  // 🔥 GET COMMISSION % FOR CATEGORY (FROM `app_settings`, ELSE AUTO 20%) 🔥
+  const getCategoryCommissionPct = (categoryStr: string): number => {
+    const cat = String(categoryStr || '').toLowerCase().trim();
+
+    if (cat && categoryRates && Object.keys(categoryRates).length > 0) {
+      if (categoryRates[cat] !== undefined) return categoryRates[cat];
+      const matchedKey = Object.keys(categoryRates).find(k => k && (cat.includes(k) || k.includes(cat)));
+      if (matchedKey && categoryRates[matchedKey] !== undefined) return categoryRates[matchedKey];
+    }
+
+    if (categoryRates['default'] !== undefined) return categoryRates['default'];
+    if (categoryRates['all'] !== undefined) return categoryRates['all'];
+    if (categoryRates['other'] !== undefined) return categoryRates['other'];
+    if (categoryRates['general'] !== undefined) return categoryRates['general'];
+
+    return defaultCommissionPct || 20; // Auto 20% if not found
+  };
+
   const calculateEarnings = (order: any) => {
     const items = getShopItems(order);
     let totalAmt = 0;
     let adminFee = 0;
 
     items.forEach((item: any) => {
-      const itemTotal = Number(item.price || 0);
+      if (isDeliveryOrService(item)) return;
       const liveProduct = findLiveProduct(item);
-      const cat = String(item.category || liveProduct?.category || '').toLowerCase().trim();
-      
-      let finalPercentage = 20; 
-      
-      if (categoryRates && Object.keys(categoryRates).length > 0) {
-         if (categoryRates[cat] !== undefined) {
-             finalPercentage = categoryRates[cat];
-         } else {
-             const matchedKey = Object.keys(categoryRates).find(k => cat.includes(k) || k.includes(cat));
-             if (matchedKey && categoryRates[matchedKey] !== undefined) {
-                 finalPercentage = categoryRates[matchedKey];
-             } else if (categoryRates['default'] !== undefined) {
-                 finalPercentage = categoryRates['default'];
-             } else if (categoryRates['other'] !== undefined) {
-                 finalPercentage = categoryRates['other'];
-             } else if (categoryRates['general'] !== undefined) {
-                 finalPercentage = categoryRates['general'];
-             }
-         }
+      const qty = Number(item.quantity || item.qty || 1);
+      const rawPrice = Number(item.price || 0);
+      const liveUnitRate = Number(liveProduct?.price || 0);
+
+      let itemTotal = rawPrice;
+      if (item.total !== undefined && item.total !== null) {
+        itemTotal = Number(item.total);
+      } else if (qty > 1 && liveUnitRate > 0 && Math.abs(rawPrice - liveUnitRate) < 5) {
+        itemTotal = rawPrice * qty;
       }
 
-      let rateDecimal = finalPercentage / 100;
+      const cat = String(item.category || liveProduct?.category || '').toLowerCase().trim();
+      const finalPercentage = getCategoryCommissionPct(cat); // From app_settings or Auto 20%
+      const rateDecimal = finalPercentage / 100;
+
       totalAmt += itemTotal;
-      adminFee += (itemTotal * rateDecimal);
+      adminFee += itemTotal * rateDecimal;
     });
 
+    if (totalAmt === 0 && Number(order?.total_amount) > 0) {
+      const delCharge = Number(order?.delivery_charge || order?.delivery_fee || 0);
+      totalAmt = Math.max(0, Number(order.total_amount) - delCharge);
+      const fallbackPct = getCategoryCommissionPct('');
+      adminFee = totalAmt * (fallbackPct / 100);
+    }
+
     return {
-      totalAmount: totalAmt,
+      totalAmount: Number(totalAmt.toFixed(2)),
       adminCommissionFee: Number(adminFee.toFixed(2)),
-      shopEarnings: Number((totalAmt - adminFee).toFixed(2))
+      shopEarnings: Number(Math.max(0, totalAmt - adminFee).toFixed(2))
     };
   };
 
@@ -231,11 +280,42 @@ export default function OrderDetailsView({
   };
 
   const getDetailsColumnName = (order: any) => {
-    if (order?.product_details) return 'product_details';
-    if (order?.items) return 'items';
-    if (order?.products) return 'products';
-    if (order?.cart_items) return 'cart_items';
+    if (order?.product_details !== undefined) return 'product_details';
+    if (order?.items !== undefined) return 'items';
+    if (order?.products !== undefined) return 'products';
+    if (order?.cart_items !== undefined) return 'cart_items';
     return 'product_details'; 
+  };
+
+  // 🔥 SAFE DATABASE ORDER UPDATER (GUARANTEES STATUS UPDATE) 🔥
+  const safeUpdateOrderInDb = async (tableName: string, orderId: any, fullUpdatePayload: any, fallbackMinimalPayload: any) => {
+    const { data, error } = await supabase
+      .from(tableName)
+      .update(fullUpdatePayload)
+      .eq('id', orderId)
+      .select()
+      .maybeSingle();
+
+    if (!error) return { data, error: null };
+
+    console.warn("Full order update failed, retrying with minimal payload:", error.message);
+    const { data: retryData, error: retryErr } = await supabase
+      .from(tableName)
+      .update(fallbackMinimalPayload)
+      .eq('id', orderId)
+      .select()
+      .maybeSingle();
+
+    if (!retryErr) return { data: retryData, error: null };
+
+    const { data: statusOnlyData, error: statusOnlyErr } = await supabase
+      .from(tableName)
+      .update({ status: fallbackMinimalPayload.status || 'completed' })
+      .eq('id', orderId)
+      .select()
+      .maybeSingle();
+
+    return { data: statusOnlyData, error: statusOnlyErr };
   };
 
   useEffect(() => {
@@ -300,7 +380,6 @@ export default function OrderDetailsView({
     }
   };
 
-  // 🔥 DOUBLE SECURITY ON CLICK ACTION 🔥
   const handleActionClick = (action: string) => {
     if (action === 'accepted') {
       if (isUpiOrder && !isVerified) {
@@ -334,14 +413,15 @@ export default function OrderDetailsView({
          updateData.status = statusToUpdate;
       }
 
+      const { error } = await safeUpdateOrderInDb(tableName, id, updateData, { status: statusToUpdate, shop_id: newShopId });
+      if (error) throw error;
+
       setOrders((prev:any[]) => prev.map((o:any) => o.id === id ? { ...o, ...updateData } : o));
       setSelectedOrder((prev: any) => ({ ...prev, ...updateData }));
 
-      await supabase.from(tableName).update(updateData).eq('id', id);
-
       setShowDateTimePicker(false);
       setSelectedDateTime('');
-      fetchOrders();
+      if (typeof fetchOrders === 'function') fetchOrders();
       
       if (dateTimeAction === 'accepted' || dateTimeAction === 'out_for_delivery') {
          setSelectedOrder(null);
@@ -360,7 +440,7 @@ export default function OrderDetailsView({
     if (!window.confirm("Kya sach mein delivery fail ho gayi hai? Haan karne par yeh order RTO (Return to Origin) list me chala jayega.")) return;
     setIsProcessing(true);
     try {
-      const orderToUpdate = orders.find((o:any) => o.id === orderId);
+      const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
       const tableName = (orderToUpdate?.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
       await supabase.from(tableName).update({ status: 'RTO Initiated' }).eq('id', orderId);
       setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, status: 'RTO Initiated' } : o));
@@ -371,7 +451,7 @@ export default function OrderDetailsView({
   };
 
   const updateLiveLocation = async (orderId: number) => {
-    const orderToUpdate = orders.find((o:any) => o.id === orderId);
+    const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
     if (!orderToUpdate) return;
     const tableName = (orderToUpdate.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
 
@@ -389,7 +469,7 @@ export default function OrderDetailsView({
   };
 
   const updateReturnPolicy = async (orderId: number, policyType: '24_hours' | '7_days' | 'none') => {
-    const orderToUpdate = orders.find((o:any) => o.id === orderId);
+    const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
     if (!orderToUpdate) return;
     const tableName = (orderToUpdate.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
 
@@ -409,7 +489,7 @@ export default function OrderDetailsView({
   };
 
   const toggleGSTStatus = async (orderId: number, currentStatus: boolean) => {
-    const orderToUpdate = orders.find((o:any) => o.id === orderId);
+    const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
     if (!orderToUpdate) return;
     const tableName = (orderToUpdate.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
 
@@ -441,7 +521,7 @@ export default function OrderDetailsView({
     setIsProcessing(true);
     try {
       const boy = deliveryBoys.find((b:any) => String(b.id) === String(boyId));
-      const orderToUpdate = orders.find((o:any) => o.id === orderId);
+      const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
       const tableName = (orderToUpdate?.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
       await supabase.from(tableName).update({ 
         delivery_boy_id: boyId,
@@ -460,7 +540,7 @@ export default function OrderDetailsView({
   };
 
   // =========================================================
-  // 🙋‍♂️ SELF DELIVERY CONFIRMATION (DEDUCT WALLET FOR COD + EARNINGS)
+  // 🙋‍♂️ SELF DELIVERY CONFIRMATION (GUARANTEED COMPLETED STATUS SAVE)
   // =========================================================
   const confirmSelfDelivery = async () => {
     if (!selectedOrder) return;
@@ -479,6 +559,7 @@ export default function OrderDetailsView({
       setIsProcessing(true);
       const nowIso = new Date().toISOString();
       const tableName = (selectedOrder.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
+      const activeShopId = currentShop?.id || selectedOrder.shop_id;
 
       let finalPaymentMode = selectedOrder.payment_mode;
       if (isCodOrder) {
@@ -501,19 +582,21 @@ export default function OrderDetailsView({
       const items = getProductDetailsArray(selectedOrder);
       for (let item of items) {
         if (item.availability !== 'available' && !isDeliveryOrService(item)) { 
-          const liveProduct = findLiveProduct(item);
-          if (liveProduct) {
-            const liveStock = Number(liveProduct.total_stock) || 0;
-            const reqQty = Number(item.quantity || item.qty) || 1;
-            await supabase.from('products').update({
-              total_stock: liveStock - reqQty,
-              sold_quantity: (Number(liveProduct.sold_quantity) || 0) + reqQty
-            }).eq('id', liveProduct.id);
-          }
+          try {
+            const liveProduct = findLiveProduct(item);
+            if (liveProduct) {
+              const liveStock = Number(liveProduct.total_stock) || 0;
+              const reqQty = Number(item.quantity || item.qty) || 1;
+              await supabase.from('products').update({
+                total_stock: Math.max(0, liveStock - reqQty),
+                sold_quantity: (Number(liveProduct.sold_quantity) || 0) + reqQty
+              }).eq('id', liveProduct.id);
+            }
+          } catch {}
         }
       }
 
-      // 2. Earnings Calculation
+      // 2. Earnings Calculation (From app_settings or Auto 20%)
       const { shopEarnings, adminCommissionFee, totalAmount } = calculateEarnings(selectedOrder);
       let netWalletUpdate = 0;
       let reasonTxt = "";
@@ -527,38 +610,42 @@ export default function OrderDetailsView({
          reasonTxt = `Self Delivery Prepaid (Order #${selectedOrder.id}) | Earnings: ₹${shopEarnings}(Prod) + ₹${selfDeliveryFee}(Del) | Net Wallet Credit: ₹${netWalletUpdate}`;
       }
 
-      if (currentShop?.id) {
-          const { data: sData } = await supabase.from('shops').select('balance').eq('id', currentShop.id).single();
+      // 3. Wallet Update
+      if (activeShopId) {
+        try {
+          const { data: sData } = await supabase.from('shops').select('balance').eq('id', activeShopId).maybeSingle();
           const currentBal = Number(sData?.balance) || 0;
           const newBal = Number((currentBal + netWalletUpdate).toFixed(2));
-          
-          await supabase.from('shops').update({ balance: newBal }).eq('id', currentShop.id);
+          await supabase.from('shops').update({ balance: newBal }).eq('id', activeShopId);
 
           await supabase.from('wallet_transactions').insert({
-             shop_id: currentShop.id,
+             shop_id: activeShopId,
              user_type: 'shop',
              amount: Math.abs(netWalletUpdate),
              type: netWalletUpdate >= 0 ? 'credit' : 'debit',
              status: 'completed',
              reason: reasonTxt
           });
+        } catch (walletErr) {
+          console.warn("Wallet update warning:", walletErr);
+        }
       }
 
       const updatedDetails = items.map((p: any) => ({ ...p, availability: 'available', shop_message: '✅ Self Delivered' }));
       const colName = getDetailsColumnName(selectedOrder);
-      const sName = currentShop?.name || 'Verified Retail Partner';
-      const sGst = currentShop?.gst_number || currentShop?.gstin || '';
+      const sName = currentShop?.name || selectedOrder?.shop_name || 'Verified Retail Partner';
+      const sGst = currentShop?.gst_number || currentShop?.gstin || currentShop?.gst_no || '';
       
-      const updateData = { 
+      const fullUpdateData = { 
           status: 'completed', 
           [colName]: updatedDetails, 
-          shop_id: currentShop.id,
+          shop_id: activeShopId,
           shop_name: sName,
           shop_gstin: sGst,
           payment_mode: finalPaymentMode,
           pincode: cleanDeliveryPin,
           delivered_at: nowIso,
-          delivery_boy_id: currentShop.id, 
+          delivery_boy_id: String(activeShopId), 
           delivery_boy_name: 'Self Delivery', 
           delivery_boy_phone: 'N/A',
           admin_commission: adminCommissionFee,
@@ -567,17 +654,27 @@ export default function OrderDetailsView({
           messages: currentMsgs
       };
 
-      await supabase.from(tableName).update(updateData).eq('id', selectedOrder.id);
-      
-      await logNigraniActivity(currentShop, 'ORDER_SELF_DELIVERED', `Self Delivered Order #${selectedOrder.id} | Mode: ${finalPaymentMode} | Wallet Updated: ₹${netWalletUpdate}`, updateData);
+      const minimalUpdateData = {
+          status: 'completed',
+          [colName]: updatedDetails,
+          shop_id: activeShopId,
+          payment_mode: finalPaymentMode,
+          delivered_at: nowIso
+      };
 
-      setOrders((prev:any[]) => prev.map((o:any) => o.id === selectedOrder.id ? { ...o, ...updateData } : o));
-      alert(`✅ Self Delivery Completed!\n\nWallet Adjusted: ₹${netWalletUpdate}\nAdmin Comm Cut: ₹${adminCommissionFee}\nDelivery Earning Added: ₹${selfDeliveryFee}`);
+      const { error: dbErr } = await safeUpdateOrderInDb(tableName, selectedOrder.id, fullUpdateData, minimalUpdateData);
+      if (dbErr) throw new Error(dbErr.message);
+
+      await logNigraniActivity(currentShop, 'ORDER_SELF_DELIVERED', `Self Delivered Order #${selectedOrder.id} | Mode: ${finalPaymentMode} | Wallet Updated: ₹${netWalletUpdate}`, fullUpdateData);
+
+      setOrders((prev:any[]) => prev.map((o:any) => o.id === selectedOrder.id ? { ...o, ...fullUpdateData, status: 'completed' } : o));
+      alert(`✅ Self Delivery Completed!\n\nOrder moved to Complete History & Sales Ledger.\nWallet Adjusted: ₹${netWalletUpdate}\nAdmin Comm: ₹${adminCommissionFee}`);
       
       setShowSelfDeliveryModal(false);
       setSelectedOrder(null); 
-      if(setOrderSubTab) setOrderSubTab('history');
-      fetchOrders(); fetchProducts(); 
+      if (setOrderSubTab) setOrderSubTab('history');
+      if (typeof fetchOrders === 'function') fetchOrders();
+      if (typeof fetchProducts === 'function') fetchProducts(); 
     } catch(e:any) { 
       alert("⚠️ ERROR: " + e.message); 
     } 
@@ -587,7 +684,7 @@ export default function OrderDetailsView({
   const acceptReturnRequest = async (orderId: number) => {
     setIsProcessing(true);
     try {
-      const orderToUpdate = orders.find((o:any) => o.id === orderId);
+      const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
       const tableName = (orderToUpdate?.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
       await supabase.from(tableName).update({ status: 'Return Accepted' }).eq('id', orderId);
       setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, status: 'Return Accepted' } : o));
@@ -603,7 +700,7 @@ export default function OrderDetailsView({
 
     setIsProcessing(true);
     try {
-      const orderToUpdate = orders.find((o:any) => o.id === orderId);
+      const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
       const tableName = (orderToUpdate?.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
       
       await supabase.from(tableName).update({ status: 'Return Rejected', cancel_reason: reason }).eq('id', orderId);
@@ -620,7 +717,7 @@ export default function OrderDetailsView({
     
     setIsProcessing(true);
     try {
-      const orderToUpdate = orders.find((o:any) => o.id === orderId);
+      const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
       const tableName = (orderToUpdate?.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
 
       const items = getProductDetailsArray(orderToUpdate);
@@ -639,11 +736,10 @@ export default function OrderDetailsView({
       const shopDebitAmt = shopEarnings; 
 
       if (currentShop?.id) {
-          const { data: sData } = await supabase.from('shops').select('balance').eq('id', currentShop.id).single();
+        try {
+          const { data: sData } = await supabase.from('shops').select('balance').eq('id', currentShop.id).maybeSingle();
           const newBal = Number(((Number(sData?.balance) || 0) - shopDebitAmt).toFixed(2));
-          
           await supabase.from('shops').update({ balance: newBal }).eq('id', currentShop.id);
-          
           await supabase.from('wallet_transactions').insert({
              shop_id: currentShop.id,
              user_type: 'shop',
@@ -652,6 +748,7 @@ export default function OrderDetailsView({
              status: 'completed',
              reason: `Refund Deduction for Return (Order #${orderToUpdate.order_no || orderToUpdate.id})`
           });
+        } catch {}
       }
 
       await supabase.from(tableName).update({ 
@@ -663,7 +760,7 @@ export default function OrderDetailsView({
       setSelectedOrder((prev: any) => ({ ...prev, status: 'Refunded', refund_status: 'Pending Admin Refund' }));
       
       alert("✅ Verification Complete!\nStock add ho gaya hai aur Shop Wallet se paise deduct ho gaye hain.");
-      fetchProducts();
+      if (typeof fetchProducts === 'function') fetchProducts();
     } catch(e:any) { 
       alert("⚠️ ERROR: " + e.message); 
     } 
@@ -675,7 +772,7 @@ export default function OrderDetailsView({
     
     setIsProcessing(true);
     try {
-      const orderToUpdate = orders.find((o:any) => o.id === orderId);
+      const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
       const tableName = (orderToUpdate?.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
 
       const items = getProductDetailsArray(orderToUpdate);
@@ -695,7 +792,7 @@ export default function OrderDetailsView({
       setSelectedOrder((prev: any) => ({ ...prev, status: 'RTO Received' }));
       
       alert("📦 RTO Package Successfully Received!\nItems wapas Stock me add kar diye gaye hain.");
-      fetchProducts();
+      if (typeof fetchProducts === 'function') fetchProducts();
     } catch(e:any) { 
       alert("⚠️ ERROR: " + e.message); 
     } 
@@ -703,7 +800,7 @@ export default function OrderDetailsView({
   };
 
   const sendToCustomerApproval = async (orderId: number) => {
-    const orderToUpdate = orders.find((o:any) => o.id === orderId);
+    const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
     if (!orderToUpdate) return;
     const tableName = (orderToUpdate.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
 
@@ -719,64 +816,76 @@ export default function OrderDetailsView({
     setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, status: 'Awaiting Customer', shop_id: newShopId } : o));
     try {
       await supabase.from(tableName).update({ [colName]: updatedProductDetails, status: 'Awaiting Customer', shop_id: newShopId }).eq('id', orderId);
-      fetchOrders();
+      if (typeof fetchOrders === 'function') fetchOrders();
     } catch (e: any) { alert("Error: " + e.message); } 
     finally { setIsProcessing(false); }
   };
 
+  // =========================================================
+  // 🏁 MARK DELIVERED & ADD TO WALLET (100% FIXED & GUARANTEED)
+  // =========================================================
   const markOrderAsCompleted = async (orderId: number) => {
-    const orderToUpdate = orders.find((o:any) => o.id === orderId);
+    const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
     if (!orderToUpdate) return;
     const tableName = (orderToUpdate.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
 
-    if (!window.confirm("Kya order deliver ho gaya hai? Isse Stock minus hoga aur Shop Wallet mein paise add honge.")) return;
+    if (!window.confirm("Kya order deliver ho gaya hai? Isse Stock minus hoga, Order Complete History mein jayega aur Shop Wallet mein paise add honge.")) return;
 
     setIsProcessing(true);
+    const nowIso = new Date().toISOString();
     const newShopId = currentShop?.id || orderToUpdate.shop_id;
-    
-    const sName = currentShop?.name || currentShop?.shop_name || 'Verified Retail Partner';
-    const sGst = currentShop?.gst_number || currentShop?.gstin || currentShop?.gst || 'Unregistered';
+    const sName = currentShop?.name || currentShop?.shop_name || orderToUpdate.shop_name || 'Verified Retail Partner';
+    const sGst = currentShop?.gst_number || currentShop?.gstin || currentShop?.gst_no || 'Unregistered';
 
     try {
+      // 1. Deduct Stock for any unpacked items
       const items = getProductDetailsArray(orderToUpdate);
       for (let item of items) {
         if (item.availability !== 'available' && !isDeliveryOrService(item)) { 
-          const liveProduct = findLiveProduct(item);
-          if (liveProduct) {
-            const liveStock = Number(liveProduct.total_stock) || 0;
-            const reqQty = Number(item.quantity || item.qty) || 1;
-            await supabase.from('products').update({
-              total_stock: liveStock - reqQty,
-              sold_quantity: (Number(liveProduct.sold_quantity) || 0) + reqQty
-            }).eq('id', liveProduct.id);
-          }
+          try {
+            const liveProduct = findLiveProduct(item);
+            if (liveProduct) {
+              const liveStock = Number(liveProduct.total_stock) || 0;
+              const reqQty = Number(item.quantity || item.qty) || 1;
+              await supabase.from('products').update({
+                total_stock: Math.max(0, liveStock - reqQty),
+                sold_quantity: (Number(liveProduct.sold_quantity) || 0) + reqQty
+              }).eq('id', liveProduct.id);
+            }
+          } catch {}
         }
       }
 
+      // 2. Calculate Shop Earnings & Admin Commission (From app_settings or Auto 20%)
       const { shopEarnings, adminCommissionFee } = calculateEarnings(orderToUpdate);
       const shopEarn = shopEarnings;
 
-      if (currentShop?.id) {
-          const { data: sData } = await supabase.from('shops').select('balance').eq('id', currentShop.id).single();
+      // 3. Credit Shop Wallet
+      if (newShopId) {
+        try {
+          const { data: sData } = await supabase.from('shops').select('balance').eq('id', newShopId).maybeSingle();
           const newBal = Number(((Number(sData?.balance) || 0) + shopEarn).toFixed(2));
-          
-          await supabase.from('shops').update({ balance: newBal }).eq('id', currentShop.id);
+          await supabase.from('shops').update({ balance: newBal }).eq('id', newShopId);
 
           await supabase.from('wallet_transactions').insert({
-             shop_id: currentShop.id,
+             shop_id: newShopId,
              user_type: 'shop',
              amount: shopEarn,
              type: 'credit',
              status: 'completed',
              reason: `Sales Earning (Order #${orderToUpdate.order_no || orderToUpdate.id})`
           });
+        } catch (walletErr) {
+          console.warn("Wallet credit warning:", walletErr);
+        }
       }
 
       const updatedDetails = items.map((p: any) => ({ ...p, availability: 'available', shop_message: '✅ Delivered Successfully' }));
       const colName = getDetailsColumnName(orderToUpdate);
       
-      const updateData = { 
-          status: 'completed', 
+      const fullUpdateData = { 
+          status: 'completed',
+          delivered_at: nowIso,
           [colName]: updatedDetails, 
           shop_id: newShopId,
           shop_name: sName,
@@ -785,21 +894,32 @@ export default function OrderDetailsView({
           shop_earning: shopEarnings
       };
 
-      setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, ...updateData } : o));
-      await supabase.from(tableName).update(updateData).eq('id', orderId);
+      const minimalUpdateData = {
+          status: 'completed',
+          delivered_at: nowIso,
+          [colName]: updatedDetails,
+          shop_id: newShopId
+      };
 
-      alert(`✅ Order Completed!\nShop Earned: ₹${shopEarn}\nAdmin Comm: ₹${adminCommissionFee}`);
+      const { error: dbErr } = await safeUpdateOrderInDb(tableName, orderId, fullUpdateData, minimalUpdateData);
+      if (dbErr) throw new Error(dbErr.message);
+
+      setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, ...fullUpdateData, status: 'completed' } : o));
+      setSelectedOrder((prev: any) => prev ? { ...prev, ...fullUpdateData, status: 'completed' } : null);
+
+      alert(`✅ Order Successfully Delivered!\n\nOrder moved to Complete History & Sales Ledger.\nShop Earned: ₹${shopEarn}\nAdmin Comm: ₹${adminCommissionFee}`);
       setSelectedOrder(null); 
-      if(setOrderSubTab) setOrderSubTab('history');
-      fetchOrders(); fetchProducts(); 
+      if (setOrderSubTab) setOrderSubTab('history');
+      if (typeof fetchOrders === 'function') fetchOrders();
+      if (typeof fetchProducts === 'function') fetchProducts(); 
     } catch(e:any) { 
-      alert("⚠️ ERROR: " + e.message); 
+      alert("⚠️ ERROR marking order delivered: " + e.message); 
     } 
     finally { setIsProcessing(false); }
   };
 
   const modifyItemQuantity = async (orderId: number, itemIdx: number) => {
-    const orderToUpdate = orders.find((o:any) => o.id === orderId);
+    const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
     if (!orderToUpdate) return;
     const tableName = (orderToUpdate.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
 
@@ -838,13 +958,13 @@ export default function OrderDetailsView({
 
       setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, status: autoStatus, shop_id: newShopId, [colName]: updatedProductDetails, total_amount: newTotalAmount } : o));
       await supabase.from(tableName).update({ [colName]: updatedProductDetails, total_amount: newTotalAmount, status: autoStatus, shop_id: newShopId }).eq('id', orderId);
-      fetchOrders(); 
+      if (typeof fetchOrders === 'function') fetchOrders(); 
     } catch(e:any) {} 
     finally { setIsProcessing(false); }
   };
 
   const updateItemStockStatus = async (orderId: number, itemIdx: number, status: 'available' | 'out_of_stock') => {
-    const orderToUpdate = orders.find((o:any) => o.id === orderId);
+    const orderToUpdate = orders.find((o:any) => o.id === orderId) || selectedOrder;
     if (!orderToUpdate) return;
     const tableName = (orderToUpdate.type || '').toLowerCase().includes('labour') ? 'labour_bookings' : 'orders';
 
@@ -865,7 +985,7 @@ export default function OrderDetailsView({
             if (!manualOverride) return;
           }
           setIsProcessing(true);
-          await supabase.from('products').update({ total_stock: liveStock - reqQty, sold_quantity: (Number(liveProduct.sold_quantity) || 0) + reqQty }).eq('id', liveProduct.id);
+          await supabase.from('products').update({ total_stock: Math.max(0, liveStock - reqQty), sold_quantity: (Number(liveProduct.sold_quantity) || 0) + reqQty }).eq('id', liveProduct.id);
         } else {
           setIsProcessing(true);
         }
@@ -882,9 +1002,11 @@ export default function OrderDetailsView({
       let autoStatus = orderToUpdate.status;
       if(['draft', 'pending', 'new', 'confirmed', 'new order'].includes(autoStatus.toLowerCase().trim())) autoStatus = 'accepted';
 
-      setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, status: autoStatus, shop_id: newShopId } : o));
+      setOrders((prev:any[]) => prev.map((o:any) => o.id === orderId ? { ...o, status: autoStatus, shop_id: newShopId, [colName]: updatedProductDetails } : o));
+      setSelectedOrder((prev: any) => prev ? { ...prev, status: autoStatus, shop_id: newShopId, [colName]: updatedProductDetails } : null);
       await supabase.from(tableName).update({ [colName]: updatedProductDetails, status: autoStatus, shop_id: newShopId }).eq('id', orderId);
-      fetchOrders(); fetchProducts();
+      if (typeof fetchOrders === 'function') fetchOrders();
+      if (typeof fetchProducts === 'function') fetchProducts();
     } catch(e:any) {} 
     finally { setIsProcessing(false); }
   };
@@ -919,7 +1041,6 @@ export default function OrderDetailsView({
   const isRtoPhase = (orderStatusStrForRender.includes('rto') && orderStatusStrForRender !== 'rto received') || orderStatusStrForRender.includes('fail') || orderStatusStrForRender.includes('undeliver');
   const isRtoCompleted = orderStatusStrForRender === 'rto received';
 
-  // 🔥 USE DYNAMIC EARNING SYSTEM HERE FOR UI 🔥
   const orderFinance = calculateEarnings(selectedOrder);
   const itemsTotalAmt = orderFinance.totalAmount;
   const shopAdminFee = orderFinance.adminCommissionFee;
@@ -1081,7 +1202,6 @@ export default function OrderDetailsView({
           
           <div style={{ display: 'flex', gap: '15px', alignItems: 'center', flexWrap: 'wrap', position: 'relative', zIndex: 1 }}>
             
-            {/* DROP-DOWN ONLY SHOWS IF NOT SELF DELIVERED */}
             {selectedOrder?.delivery_boy_id !== String(currentShop?.id) && (
               <div style={{ 
                 flex: 1, 
@@ -1110,14 +1230,13 @@ export default function OrderDetailsView({
                   }}
                 >
                   <option value="" style={{ color: '#94a3b8' }}>🚀 -- Tap to Choose Delivery Partner -- 🚀</option>
-                  {deliveryBoys.map((boy: any) => (
+                  {(deliveryBoys || []).map((boy: any) => (
                     <option key={boy.id} value={boy.id} style={{ color: '#fff' }}>{boy.name} (Ph: {boy.phone})</option>
                   ))}
                 </select>
               </div>
             )}
             
-            {/* SELF DELIVERY BUTTON */}
             {!isCompleted && !orderStatusStrForRender.includes('cancel') && !orderStatusStrForRender.includes('fail') && !isReturnPhase && !isRtoPhase && selectedOrder?.delivery_boy_id !== String(currentShop?.id) && (
               <button 
                 onClick={() => {
@@ -1174,6 +1293,8 @@ export default function OrderDetailsView({
           const totalLinePrice = Number(item.price || 0);
           const itemUnitPrice = reqQty > 0 ? (totalLinePrice / reqQty).toFixed(2) : 0;
           const itemImage = liveProduct?.image_url || liveProduct?.image || item?.image_url || item?.image || null;
+          const itemCat = String(item.category || liveProduct?.category || 'General');
+          const itemCommPct = isDelivery ? 0 : getCategoryCommissionPct(itemCat);
 
           return (
             <div key={idx} style={{ backgroundColor: '#0f172a', padding: '15px', borderRadius: '10px', border: isDelivery ? '1px solid #8b5cf6' : (isMatched ? '1px solid #334155' : '1px solid #ef4444') }}>
@@ -1205,6 +1326,11 @@ export default function OrderDetailsView({
                       <span style={{ fontSize: '14px', color: '#cbd5e1', display: 'inline-block', marginTop: '4px' }}>
                         Qty: <strong>{reqQty} {displayUnit}</strong> | Rate: ₹{itemUnitPrice} | Total: ₹{totalLinePrice}
                       </span>
+                      {!isDelivery && (
+                        <div style={{ fontSize: '11.5px', color: '#fca5a5', marginTop: '3px' }}>
+                          Category: <strong>{itemCat}</strong> | Admin Comm: <strong>{itemCommPct}%</strong> (-₹{((totalLinePrice * itemCommPct) / 100).toFixed(2)})
+                        </div>
+                      )}
                     </div>
                   </div>
                   
@@ -1396,11 +1522,9 @@ export default function OrderDetailsView({
         
         {!isReturnPhase && !orderStatusStrForRender.includes('refund') && !isRtoPhase && !isRtoCompleted && (
           <>
-            {/* 🔥 ACCEPT BUTTON LOGIC 🔥 */}
             {isOrderAlreadyAccepted ? (
                 <span style={{ ...actionBtnStyle, backgroundColor: '#1e293b', border: '1px solid #10b981', color: '#10b981' }}>Order Accepted ✅</span>
             ) : (isUpiOrder && !isVerified) ? (
-                // 🔒 LOCKED BUTTON IF ONLINE & NOT VERIFIED
                 <button 
                    disabled 
                    style={{ ...actionBtnStyle, backgroundColor: '#475569', cursor: 'not-allowed', opacity: 0.8 }}
@@ -1408,7 +1532,6 @@ export default function OrderDetailsView({
                    🔒 Waiting for Admin Approval
                 </button>
             ) : (
-                // 🟢 UNLOCKED BUTTON (COD OR VERIFIED ONLINE)
                 <button 
                    onClick={() => handleActionClick('accepted')} 
                    style={{ ...actionBtnStyle, backgroundColor: '#10b981' }} 
@@ -1420,12 +1543,10 @@ export default function OrderDetailsView({
 
             <button onClick={() => sendToCustomerApproval(selectedOrder.id)} style={{ ...actionBtnStyle, backgroundColor: '#f59e0b' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '⚠️ Send to Customer Approval'}</button>
             
-            {/* OUT FOR DELIVERY BUTTON */}
             <button onClick={() => handleActionClick('out_for_delivery')} style={{ ...actionBtnStyle, backgroundColor: '#a855f7' }} disabled={isCompleted || isProcessing}>{isProcessing ? '⏳...' : '🛵 Mark Out for Delivery'}</button>
           </>
         )}
 
-        {/* MASKED DIRECT CALL BUTTONS */}
         <button onClick={() => handleInitiateCall(selectedOrder, cPhoneRaw)} style={{ ...actionBtnStyle, backgroundColor: '#25d366' }}>📞 डायरेक्ट कॉल (Customer)</button>
         
         {!isReturnPhase && !orderStatusStrForRender.includes('refund') && !isRtoPhase && !isRtoCompleted && (
@@ -1442,8 +1563,8 @@ export default function OrderDetailsView({
         
       </div>
 
-      {/* NORMAL MARK DELIVERED (Only show if not assigned to Self Delivery, because Self Delivery has its own dedicated button) */}
-      {!isReturnPhase && !orderStatusStrForRender.includes('refund') && !isRtoPhase && !isRtoCompleted && selectedOrder?.delivery_boy_id !== String(currentShop?.id) && (
+      {/* 🏁 MARK DELIVERED BUTTON */}
+      {!isReturnPhase && !orderStatusStrForRender.includes('refund') && !isRtoPhase && !isRtoCompleted && (
         <div style={{ marginTop: '12px' }}>
           <button onClick={() => markOrderAsCompleted(selectedOrder.id)} style={{ width: '100%', padding: '16px', backgroundColor: isCompleted ? '#334155' : '#ef4444', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '18px', cursor: isCompleted || isProcessing ? 'not-allowed' : 'pointer', boxShadow: isCompleted ? 'none' : '0 4px 10px rgba(239, 68, 68, 0.3)' }} disabled={isCompleted || isProcessing}>
             {isProcessing ? '⏳ PROCESSING...' : (isCompleted ? '✅ ALREADY DELIVERED' : '🏁 Mark Delivered & Add to Wallet')}
