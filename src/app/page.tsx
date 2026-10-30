@@ -37,12 +37,13 @@ export default function ShopOwnerGuestHomePage() {
 
   const sharedStyles = `
     .main-bg { background: #f8fafc; min-height: 100vh; font-family: system-ui, sans-serif; color: #0f172a; display: flex; flex-direction: column; }
-    .hero-banner { background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%); color: white; padding: 50px 16px; text-align: center; border-bottom-left-radius: 40px; border-bottom-right-radius: 40px; box-shadow: 0 10px 40px rgba(15,23,42,0.2); margin-bottom: 30px; box-sizing: border-box; width: 100%; }
-    .brand-logo-card { background: #ffffff; padding: 12px 25px; border-radius: 12px; display: inline-flex; flex-direction: column; align-items: center; box-shadow: 0 8px 25px rgba(0,0,0,0.2); border-bottom: 4px solid #fb641b; margin-bottom: 15px; position: relative; }
-    .brand-text-logo { font-size: clamp(28px, 6vw, 48px); font-weight: 900; font-style: italic; font-family: 'Arial Black', Impact, sans-serif; letter-spacing: -1.5px; line-height: 1; display: flex; align-items: center; cursor: pointer; }
+    .hero-banner { background: linear-gradient(135deg, #0a1e5c 0%, #030b26 100%); color: white; padding: 50px 16px; text-align: center; border-bottom-left-radius: 40px; border-bottom-right-radius: 40px; box-shadow: 0 10px 40px rgba(10,30,92,0.25); margin-bottom: 30px; box-sizing: border-box; width: 100%; }
+    .brand-logo-card { background: #ffffff; padding: 14px 28px; border-radius: 16px; display: inline-flex; flex-direction: column; align-items: center; box-shadow: 0 10px 30px rgba(0,0,0,0.2); border-bottom: 4px solid #ff6f00; margin-bottom: 18px; position: relative; }
+    .brand-text-logo { font-size: clamp(32px, 7vw, 54px); font-weight: 900; font-style: italic; font-family: 'Arial Black', Impact, sans-serif; letter-spacing: -1.5px; line-height: 1; display: flex; align-items: center; cursor: pointer; }
+    .brand-tagline { font-size: 10px; font-weight: 800; letter-spacing: 1.5px; color: #0a1e5c; text-transform: uppercase; margin-top: 6px; border-top: 1.5px solid #0a1e5c; padding-top: 4px; width: 100%; text-align: center; }
     .features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; width: 100%; box-sizing: border-box; }
     .feature-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 25px 20px; text-align: center; transition: 0.3s; box-shadow: 0 4px 15px rgba(0,0,0,0.05); box-sizing: border-box; }
-    .feature-card:hover { transform: translateY(-5px); border-color: #38bdf8; box-shadow: 0 10px 25px rgba(40,116,240,0.15); }
+    .feature-card:hover { transform: translateY(-5px); border-color: #38bdf8; box-shadow: 0 10px 25px rgba(10,30,92,0.15); }
     .pos-badge { background: #ffeb3b; color: #000; font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 12px; position: absolute; top: -10px; right: -10px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); animation: pulse 1.5s infinite; }
     @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
   `;
@@ -56,15 +57,17 @@ export default function ShopOwnerGuestHomePage() {
       {/* HEADER */}
       <div style={{ background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(15px)', position: 'sticky', top: 0, zIndex: 100, padding: '12px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', width: '100%', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <div onClick={() => router.push('/')} style={{ cursor: 'pointer', fontSize: '24px', fontWeight: '900', fontStyle: 'italic', color: '#0f172a', letterSpacing: '-1px' }}>
-            F<span style={{color: '#fb641b'}}>i</span>x<span style={{color: '#2874f0'}}>i</span>fiy <span style={{ color: '#475569', fontWeight: '600', fontSize: '13px', fontStyle: 'normal' }}>Partner</span>
+          <div onClick={() => router.push('/')} style={{ cursor: 'pointer', fontSize: '26px', fontWeight: '900', fontStyle: 'italic', letterSpacing: '-1px' }}>
+            <span style={{ color: '#0a1e5c' }}>Fixi</span>
+            <span style={{ color: '#ff6f00' }}>fiy</span>
+            <span style={{ color: '#0a1e5c', fontWeight: '700', fontSize: '13px', fontStyle: 'normal', marginLeft: '6px', background: '#f1f5f9', padding: '3px 8px', borderRadius: '6px' }}>Partner</span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
           <div onClick={() => setLang(lang === 'EN' ? 'HI' : 'EN')} style={{ cursor: 'pointer', background: '#f1f5f9', padding: '6px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 'bold', color: '#0f172a' }}>
             🌐 {lang === 'EN' ? 'English' : 'हिंदी'}
           </div>
-          <button type="button" onClick={() => router.push('/login')} style={{ background: '#0f172a', color: 'white', border: 'none', padding: '8px 20px', borderRadius: '30px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 10px rgba(0,0,0,0.15)', fontSize: '12px' }}>
+          <button type="button" onClick={() => router.push('/login')} style={{ background: '#0a1e5c', color: 'white', border: 'none', padding: '8px 20px', borderRadius: '30px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 10px rgba(10,30,92,0.25)', fontSize: '12px' }}>
             {t('Login / Register', 'लॉगिन / रजिस्टर')}
           </button>
         </div>
@@ -72,19 +75,23 @@ export default function ShopOwnerGuestHomePage() {
 
       {/* HERO BANNER */}
       <div className="hero-banner">
-        <div style={{ display: 'inline-block', background: 'rgba(255, 255, 255, 0.15)', padding: '6px 16px', borderRadius: '25px', fontSize: '11px', fontWeight: 'bold', letterSpacing: '0.5px', marginBottom: '15px', color: '#fbbf24', border: '1px solid rgba(255, 255, 255, 0.2)', textTransform: 'uppercase' }}>
+        <div style={{ display: 'inline-block', background: 'rgba(255, 255, 255, 0.12)', padding: '6px 16px', borderRadius: '25px', fontSize: '11px', fontWeight: 'bold', letterSpacing: '0.5px', marginBottom: '18px', color: '#ffb74d', border: '1px solid rgba(255, 255, 255, 0.2)', textTransform: 'uppercase' }}>
           🇮🇳 {t("India's No. 1 Digital Byapar Manch for Shop Owners", "दुकानदारों के लिए भारत का नंबर 1 डिजिटल व्यापार मंच")}
         </div>
         <br/>
+
+        {/* LOGO CARD */}
         <div className="brand-logo-card">
-          <div onClick={() => router.push('/')} className="brand-text-logo" style={{ cursor: 'pointer', position: 'relative' }}>
-            <span style={{ color: '#0a192f' }}>F</span><span style={{ color: '#0a192f' }}>i</span>
-            <span style={{ color: '#fb641b', position: 'relative' }}>x<span style={{ position: 'absolute', top: '-10px', right: '-12px', fontSize: 'clamp(16px, 3vw, 24px)' }}>🏬</span></span>
-            <span style={{ color: '#0a192f' }}>i</span><span style={{ color: '#0a192f' }}>f</span><span style={{ color: '#0a192f' }}>i</span><span style={{ color: '#0a192f' }}>y</span>
-            {/* 🔥 New POS Animated Badge */}
+          <div onClick={() => router.push('/')} className="brand-text-logo">
+            <span style={{ color: '#0a1e5c' }}>Fixi</span>
+            <span style={{ color: '#ff6f00' }}>fiy</span>
             <span className="pos-badge">NEW POS</span>
           </div>
+          <div className="brand-tagline">
+            E-COMMERCE <span style={{ color: '#ff6f00' }}>|</span> E-SERVICE <span style={{ color: '#ff6f00' }}>|</span> SUPER APP
+          </div>
         </div>
+
         <h1 style={{ fontSize: 'clamp(20px, 4vw, 30px)', fontWeight: 800, margin: '10px 0 12px 0', lineHeight: 1.3, color: '#f8fafc', padding: '0 10px' }}>
           {t("Apni Dukaan Ko Digital Banayein, POS Se Counter Billing Karein aur Online Orders Accept Karein! ✨", "अपनी दुकान को डिजिटल बनाएं, POS से काउंटर बिलिंग करें और ऑनलाइन ऑर्डर्स एक्सेप्ट करें! ✨")}
         </h1>
@@ -92,9 +99,9 @@ export default function ShopOwnerGuestHomePage() {
           {t("Login karke apni inventory manage karein, counter par grahakon ko offline bill banakar dein aur apne kshetra ke hazaron online grahakon tak pahuchein.", "लॉगिन करके अपनी इन्वेंटरी मैनेज करें, काउंटर पर ग्राहकों को ऑफलाइन बिल बनाकर दें और अपने क्षेत्र के हजारों ऑनलाइन ग्राहकों तक पहुंचें।")}
         </p>
         <button 
-          type="button"
-          onClick={() => router.push('/login')}
-          style={{ background: '#fb641b', color: 'white', border: 'none', padding: '14px 35px', borderRadius: '30px', fontWeight: '900', fontSize: '15px', cursor: 'pointer', boxShadow: '0 8px 25px rgba(251,100,27,0.4)' }}
+          type="button" 
+          onClick={() => router.push('/login')} 
+          style={{ background: '#ff6f00', color: 'white', border: 'none', padding: '14px 35px', borderRadius: '30px', fontWeight: '900', fontSize: '15px', cursor: 'pointer', boxShadow: '0 8px 25px rgba(255,111,0,0.45)' }}
         >
           {t('🚀 Shop Owner Login / Signup', '🚀 शॉप ओनर लॉगिन / साइनअप')}
         </button>
@@ -106,12 +113,10 @@ export default function ShopOwnerGuestHomePage() {
           🛠️ {t("Grow Offline & Online with Fixifiy", "फिक्सिफ़ाई के साथ ऑफलाइन और ऑनलाइन दोनों बिज़नेस बढ़ाएं")}
         </h3>
 
-        {/* 🔥 Now a 4-Column Grid to include the POS Feature */}
         <div className="features-grid">
-          
           <div className="feature-card">
             <div style={{ fontSize: '40px', marginBottom: '15px' }}>📦</div>
-            <h4 style={{ fontSize: '18px', fontWeight: '900', color: '#2874f0', marginBottom: '10px' }}>
+            <h4 style={{ fontSize: '18px', fontWeight: '900', color: '#0a1e5c', marginBottom: '10px' }}>
               {t("1. Instant Inventory", "1. आसान इन्वेंटरी")}
             </h4>
             <p style={{ fontSize: '14px', color: '#475569', lineHeight: '1.6', margin: 0 }}>
@@ -119,11 +124,10 @@ export default function ShopOwnerGuestHomePage() {
             </p>
           </div>
 
-          {/* 🔥 NEW POS FEATURE CARD */}
-          <div className="feature-card" style={{ border: '1px solid #fbbf24', position: 'relative', overflow: 'hidden' }}>
-            <div style={{ position: 'absolute', top: 0, right: 0, background: '#fbbf24', color: '#000', fontSize: '10px', fontWeight: 'bold', padding: '4px 10px', borderBottomLeftRadius: '10px' }}>NEW</div>
+          <div className="feature-card" style={{ border: '1px solid #ffb74d', position: 'relative', overflow: 'hidden' }}>
+            <div style={{ position: 'absolute', top: 0, right: 0, background: '#ff6f00', color: '#fff', fontSize: '10px', fontWeight: 'bold', padding: '4px 10px', borderBottomLeftRadius: '10px' }}>NEW</div>
             <div style={{ fontSize: '40px', marginBottom: '15px' }}>🖨️</div>
-            <h4 style={{ fontSize: '18px', fontWeight: '900', color: '#d97706', marginBottom: '10px' }}>
+            <h4 style={{ fontSize: '18px', fontWeight: '900', color: '#ff6f00', marginBottom: '10px' }}>
               {t("2. Smart POS System", "2. स्मार्ट POS सिस्टम")}
             </h4>
             <p style={{ fontSize: '14px', color: '#475569', lineHeight: '1.6', margin: 0 }}>
@@ -143,30 +147,31 @@ export default function ShopOwnerGuestHomePage() {
 
           <div className="feature-card">
             <div style={{ fontSize: '40px', marginBottom: '15px' }}>💰</div>
-            <h4 style={{ fontSize: '18px', fontWeight: '900', color: '#fb641b', marginBottom: '10px' }}>
+            <h4 style={{ fontSize: '18px', fontWeight: '900', color: '#ff6f00', marginBottom: '10px' }}>
               {t("4. Grow Your Business", "4. अपना व्यापार बढ़ाएं")}
             </h4>
             <p style={{ fontSize: '14px', color: '#475569', lineHeight: '1.6', margin: 0 }}>
               {t("Fixifiy platform ke zariye bina kisi extra cost ke apne local area mein apni dukan ki bikri ko kai guna badhayein.", "फिक्सिफ़ाई प्लेटफॉर्म के ज़रिए बिना किसी एक्स्ट्रा कॉस्ट के अपने लोकल एरिया में अपनी दुकान की बिक्री को कई गुना बढ़ाएं।")}
             </p>
           </div>
-
         </div>
       </div>
 
       {/* FOOTER */}
-      <footer className="no-print" style={{ background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)', color: '#cbd5e1', padding: '50px 20px 30px 20px', marginTop: 'auto', borderTop: '4px solid #fb641b', width: '100%', boxSizing: 'border-box' }}>
+      <footer className="no-print" style={{ background: 'linear-gradient(135deg, #071339 0%, #0a1e5c 100%)', color: '#cbd5e1', padding: '50px 20px 30px 20px', marginTop: 'auto', borderTop: '4px solid #ff6f00', width: '100%', boxSizing: 'border-box' }}>
         <div style={{ maxWidth: '1100px', margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '30px' }}>
           <div>
-            <div onClick={() => router.push('/')} style={{ cursor: 'pointer', fontSize: '30px', fontWeight: '900', fontStyle: 'italic', fontFamily: 'Arial Black, Impact, sans-serif', color: 'white', marginBottom: '15px', letterSpacing: '-1px' }}>
-              F<span style={{ color: 'white' }}>i</span><span style={{ color: '#fb641b' }}>x</span><span style={{ color: 'white' }}>i</span>fiy <span style={{ fontSize: '14px', fontStyle: 'normal', color: '#fb641b' }}>Partner</span>
+            <div onClick={() => router.push('/')} style={{ cursor: 'pointer', fontSize: '30px', fontWeight: '900', fontStyle: 'italic', fontFamily: 'Arial Black, Impact, sans-serif', marginBottom: '15px', letterSpacing: '-1px' }}>
+              <span style={{ color: '#ffffff' }}>Fixi</span>
+              <span style={{ color: '#ff6f00' }}>fiy</span>
+              <span style={{ fontSize: '14px', fontStyle: 'normal', color: '#ffb74d', marginLeft: '6px' }}>Partner</span>
             </div>
             <p style={{ fontSize: '13px', lineHeight: '1.6', marginBottom: '15px', color: '#94a3b8' }}>
               <strong>Fixifiy Technology</strong> {t("(A unit of Mahadev Enterprises). India's leading Digital Byapar Manch for local retail shop owners.", "(महादेव एंटरप्राइजेज की इकाई)। स्थानीय खुदरा दुकानदारों के लिए भारत का अग्रणी डिजिटल व्यापार मंच।")}
             </p>
           </div>
           <div>
-            <h4 style={{ color: 'white', fontSize: '16px', fontWeight: '800', margin: '0 0 15px 0', borderBottom: '3px solid #2874f0', paddingBottom: '6px', display: 'inline-block' }}>
+            <h4 style={{ color: 'white', fontSize: '16px', fontWeight: '800', margin: '0 0 15px 0', borderBottom: '3px solid #ff6f00', paddingBottom: '6px', display: 'inline-block' }}>
               {t("Quick Links", "क्विक लिंक्स")}
             </h4>
             <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '13px', lineHeight: '2.2', color: '#94a3b8' }}>
@@ -191,7 +196,6 @@ export default function ShopOwnerGuestHomePage() {
           © {new Date().getFullYear()} Fixifiy Partner {t("(A unit of Mahadev Enterprises). All Rights Reserved.", "(महादेव एंटरप्राइजेज की एक इकाई)। सर्वाधिकार सुरक्षित।")}
         </div>
       </footer>
-
     </div>
   );
 }
