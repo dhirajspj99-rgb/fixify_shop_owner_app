@@ -1,6 +1,7 @@
 "use client";
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import GstReturnTab from './GstReturnTab';
 
 export default function CounterBillingTab({
   currentShop,
@@ -13,17 +14,34 @@ export default function CounterBillingTab({
   mode = 'pos' // 'pos' | 'delivery_partners'
 }: any) {
   // ==========================================
+  // 🖥️ DEDICATED FULL-SCREEN POS MODE STATE
+  // ==========================================
+  const [isFullScreenPos, setIsFullScreenPos] = useState<boolean>(false);
+
+  const toggleFullScreenPos = () => {
+    const nextState = !isFullScreenPos;
+    setIsFullScreenPos(nextState);
+    try {
+      if (nextState && document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else if (!nextState && document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    } catch {}
+  };
+
+  // ==========================================
   // 💳 SUBSCRIPTION PLANS & STRICT ADMIN APPROVAL STATE
   // ==========================================
   const [adminUpi, setAdminUpi] = useState('admin@ybl');
   const [selectedPlan, setSelectedPlan] = useState<any>({
     id: '1_month',
-    name: '1 Month Plan (मासिक)',
+    name: '1 Month Plan (Monthly)',
     months: 1,
     days: 30,
     price: 199,
     origPrice: 249,
-    badge: '₹199 / माह'
+    badge: '₹199 / Month'
   });
   const [utrNumber, setUtrNumber] = useState('');
   const [isSubmittingPlan, setIsSubmittingPlan] = useState(false);
@@ -31,41 +49,41 @@ export default function CounterBillingTab({
   const [pendingPaymentRecord, setPendingPaymentRecord] = useState<any>(null);
 
   const posPlans = [
-    { id: '1_month', name: '1 Month Plan (मासिक)', months: 1, days: 30, price: 199, origPrice: 249, badge: '₹199 / माह' },
-    { id: '3_months', name: '3 Months Plan (तिमाही)', months: 3, days: 90, price: 549, origPrice: 597, badge: 'Save ₹48' },
-    { id: '6_months', name: '6 Months Plan (छमाही)', months: 6, days: 180, price: 999, origPrice: 1194, badge: 'Save ₹195' },
-    { id: '12_months', name: '12 Months Plan (वार्षिक)', months: 12, days: 365, price: 1999, origPrice: 2388, badge: '🔥 Best Value (Save ₹389)' }
+    { id: '1_month', name: '1 Month Plan (Monthly)', months: 1, days: 30, price: 199, origPrice: 249, badge: '₹199 / Month' },
+    { id: '3_months', name: '3 Months Plan (Quarterly)', months: 3, days: 90, price: 549, origPrice: 597, badge: 'Save ₹48' },
+    { id: '6_months', name: '6 Months Plan (Half-Yearly)', months: 6, days: 180, price: 999, origPrice: 1194, badge: 'Save ₹195' },
+    { id: '12_months', name: '12 Months Plan (Annual)', months: 12, days: 365, price: 1999, origPrice: 2388, badge: 'Best Value • Save ₹389' }
   ];
 
   // ==========================================
   // 🧾 POS BILLING, CHARGES & GST STATES
   // ==========================================
-  const [posSubView, setPosSubView] = useState<'pos_screen' | 'counter_history' | 'online_history'>('pos_screen');
+  const [posSubView, setPosSubView] = useState<'pos_screen' | 'counter_history' | 'online_history' | 'gst_return'>('pos_screen');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [cart, setCart] = useState<any[]>([]);
 
-  // 🔥 LIVE SYNCED STOCK STATE FROM SUPABASE `products` TABLE 🔥
+  // Live Synced Inventory State from Supabase `products` table
   const [liveDbProducts, setLiveDbProducts] = useState<any[]>([]);
   const [isSyncingStock, setIsSyncingStock] = useState<boolean>(false);
 
-  // 🔥 DEDICATED SUPABASE `counter_bills` STATE (NEVER DELETES!) 🔥
+  // Dedicated Supabase `counter_bills` State
   const [dbCounterBills, setDbCounterBills] = useState<any[]>([]);
   const [isLoadingBills, setIsLoadingBills] = useState<boolean>(false);
 
   // Local Stock Override Map so UI immediately reflects deducted stock after sale
   const [localStockOverrides, setLocalStockOverrides] = useState<Record<string, number>>({});
 
-  // 📷 PRODUCT QR / BARCODE CAMERA SCANNER STATES
+  // Product QR / Barcode Camera Scanner States
   const [isScannerOpen, setIsScannerOpen] = useState(false);
-  const [scanStatusMsg, setScanStatusMsg] = useState('कैमरे को प्रोडक्ट के QR या बारकोड के सामने रखें...');
+  const [scanStatusMsg, setScanStatusMsg] = useState('Position the product QR or Barcode inside the frame...');
   const [manualScanCode, setManualScanCode] = useState('');
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scannerStreamRef = useRef<MediaStream | null>(null);
   const scanIntervalRef = useRef<any>(null);
 
-  // Customer Details (Name, Phone, Full Address)
+  // Customer Details
   const [custName, setCustName] = useState('');
   const [custPhone, setCustPhone] = useState('');
   const [custAddress, setCustAddress] = useState('');
@@ -75,8 +93,9 @@ export default function CounterBillingTab({
   const [labourCharge, setLabourCharge] = useState<string>('0');
   const [transportCharge, setTransportCharge] = useState<string>('0');
 
-  // GST Bill Checkbox & Dummy/Shop GSTIN State
+  // GST Settings (Inclusive / Exclusive)
   const [isGstBillEnabled, setIsGstBillEnabled] = useState<boolean>(false);
+  const [gstType, setGstType] = useState<'inclusive' | 'exclusive'>('inclusive');
   const [gstPercent, setGstPercent] = useState<number>(18);
   const [shopGstNumber, setShopGstNumber] = useState<string>('');
   const [custGstNumber, setCustGstNumber] = useState<string>('');
@@ -93,7 +112,7 @@ export default function CounterBillingTab({
   const [customItemQty, setCustomItemQty] = useState('1');
   const [customItemUnit, setCustomItemUnit] = useState('Pcs');
 
-  // Shop Owner UPI ID for Bill QR Code (Strictly Shop Owner Profile UPI)
+  // Shop Owner UPI ID for Bill QR Code
   const [shopUpiId, setShopUpiId] = useState('');
   const [isEditingUpi, setIsEditingUpi] = useState(false);
 
@@ -132,7 +151,7 @@ export default function CounterBillingTab({
     return trimmed.includes('@') && trimmed.toLowerCase() !== 'admin@ybl' ? trimmed : '';
   };
 
-  // 🔥 1. DIRECT SUPABASE STOCK FETCHER (`products` table) 🔥
+  // 1. DIRECT SUPABASE STOCK FETCHER (`products` table)
   const fetchLiveShopStockFromDb = async () => {
     if (!currentShop?.id) return;
     setIsSyncingStock(true);
@@ -154,7 +173,7 @@ export default function CounterBillingTab({
     }
   };
 
-  // 🔥 2. DIRECT SUPABASE COUNTER BILLS FETCHER (`counter_bills` table) 🔥
+  // 2. DIRECT SUPABASE COUNTER BILLS FETCHER (`counter_bills` table)
   const fetchCounterBillsFromDb = async () => {
     if (!currentShop?.id) return;
     setIsLoadingBills(true);
@@ -229,7 +248,7 @@ export default function CounterBillingTab({
         if (savedLocal) setLocalCounterBills(JSON.parse(savedLocal));
       } catch {}
 
-      // 🔥 REAL-TIME SUPABASE SUBSCRIPTION FOR STOCK & COUNTER BILLS 🔥
+      // REAL-TIME SUPABASE SUBSCRIPTION FOR STOCK & COUNTER BILLS
       const posChannel = supabase
         .channel(`pos_live_channel_${currentShop.id}`)
         .on(
@@ -296,7 +315,7 @@ export default function CounterBillingTab({
   const saveShopOwnerUpi = async () => {
     const cleanUpi = shopUpiId.trim();
     if (cleanUpi && !cleanUpi.includes('@')) {
-      return alert('⚠️ कृपया सही UPI ID डालें (उदाहरण: 9876543210@ybl)');
+      return alert('Please enter a valid UPI ID (e.g., 9876543210@ybl).');
     }
     if (cleanUpi) {
       localStorage.setItem(`fixifiy_shop_upi_${currentShop?.id}`, cleanUpi);
@@ -312,11 +331,7 @@ export default function CounterBillingTab({
       localStorage.setItem('fixifiy_shop', JSON.stringify(updated));
     }
     setIsEditingUpi(false);
-    if (cleanUpi) {
-      alert('✅ आपकी दुकान का UPI ID सेव हो गया! अब काउंटर बिल पर आपका QR कोड दिखेगा।');
-    } else {
-      alert('ℹ️ UPI ID हटा दिया गया है।');
-    }
+    alert(cleanUpi ? 'Store UPI ID saved successfully. Your QR code will now appear on invoices.' : 'Store UPI ID removed.');
   };
 
   const saveShopGstNumber = async () => {
@@ -331,7 +346,7 @@ export default function CounterBillingTab({
       localStorage.setItem('fixifiy_shop', JSON.stringify(updated));
     }
     setIsEditingGst(false);
-    alert('✅ दुकान का GST नंबर सेव हो गया! अब यह ऊपर दुकान के नाम के बगल में और बिल पर दिखेगा।');
+    alert('Store GSTIN saved successfully. It will now print automatically on all GST invoices.');
   };
 
   // ==========================================================
@@ -380,11 +395,11 @@ export default function CounterBillingTab({
           const st = String(pmData.status || '').toLowerCase();
           if (showAlert) {
             if (st === 'approved' || st === 'active' || st === 'completed' || freshShop?.pos_plan_status === 'active') {
-              alert('🎉 बधाई हो! एडमिन ने आपका पेमेंट अप्रूव कर दिया है। काउंटर बिलिंग अब चालू है!');
+              alert('Payment Approved! Your Counter Billing (POS) system is now active.');
             } else if (st === 'rejected' || st === 'declined') {
-              alert('❌ आपका UTR नंबर एडमिन द्वारा अस्वीकार (Reject) कर दिया गया है। कृपया सही UTR डालें।');
+              alert('Your UTR number was rejected by Admin. Please submit a valid UTR.');
             } else {
-              alert('⏳ आपका पेमेंट अभी एडमिन वेरिफिकेशन के लिए पेंडिंग (Pending) है। कृपया एडमिन अप्रूवल की प्रतीक्षा करें।');
+              alert('Your payment is currently pending admin verification. Please check back shortly.');
             }
           }
         }
@@ -441,7 +456,7 @@ export default function CounterBillingTab({
   const handleSubscribePlan = async () => {
     const cleanUtr = utrNumber.trim();
     if (!/^\d{12}$/.test(cleanUtr) && cleanUtr.length < 8) {
-      return alert('❌ कृपया पेमेंट के बाद सही 12-अंकों का UTR / Reference नंबर डालें!');
+      return alert('Please enter a valid 12-digit UTR / Transaction Reference Number.');
     }
     setIsSubmittingPlan(true);
     try {
@@ -511,11 +526,11 @@ export default function CounterBillingTab({
       }
 
       alert(
-        `✅ आपका UTR नंबर (${cleanUtr}) सफलतापूर्वक एडमिन के पास भेज दिया गया है!\n\n🔒 जैसे ही एडमिन आपके पेमेंट को वेरीफाई करके Approve करेंगे, आपका काउंटर बिलिंग सिस्टम चालू हो जाएगा।`
+        `UTR (${cleanUtr}) submitted successfully for Admin verification.\n\nYour Counter Billing system will activate immediately upon Admin approval.`
       );
       setUtrNumber('');
     } catch (e: any) {
-      alert('❌ Error submitting UTR: ' + e.message);
+      alert('Error submitting UTR: ' + e.message);
     } finally {
       setIsSubmittingPlan(false);
     }
@@ -669,17 +684,17 @@ export default function CounterBillingTab({
   }, [myShopInStockProducts, searchQuery, selectedCategory]);
 
   // ==========================================
-  // 🛒 CART & BILLING CALCULATIONS
+  // 🛒 CART & INCLUSIVE/EXCLUSIVE GST CALCULATIONS
   // ==========================================
   const addToCart = (product: any) => {
     const baseStock = getBaseProductStock(product);
     if (baseStock <= 0) {
-      return alert(`❌ "${product.name || product.product_name}" का स्टॉक खत्म (0 Stock) हो चुका है! कृपया पहले Stock Room में स्टॉक बढ़ाएं।`);
+      return alert(`"${product.name || product.product_name}" is currently Out of Stock. Please restock in Inventory first.`);
     }
 
     const existing = cart.find(item => String(item.id) === String(product.id));
     if (existing && existing.qty + 1 > baseStock) {
-      return alert(`⚠️ केवल ${baseStock} ${product.unit || 'Pc'} स्टॉक में उपलब्ध हैं!`);
+      return alert(`Only ${baseStock} ${product.unit || 'Pc'} available in stock.`);
     }
 
     playBeepSound();
@@ -761,18 +776,18 @@ export default function CounterBillingTab({
 
     if (matchedProd) {
       addToCart(matchedProd);
-      setScanStatusMsg(`✅ मिल गया: "${matchedProd.name || matchedProd.product_name}" (₹${matchedProd.price || matchedProd.selling_price}) बिल में जुड़ गया!`);
+      setScanStatusMsg(`Added: "${matchedProd.name || matchedProd.product_name}" (₹${matchedProd.price || matchedProd.selling_price})`);
       return true;
     } else {
       setSearchQuery(candidateId);
-      setScanStatusMsg(`🔍 "${candidateId}" को सर्च बार में डाल दिया गया है।`);
+      setScanStatusMsg(`Searched "${candidateId}" in inventory catalog.`);
       return false;
     }
   };
 
   const startCameraScanner = async () => {
     setIsScannerOpen(true);
-    setScanStatusMsg('📷 कैमरा चालू हो रहा है... प्रोडक्ट का QR / बारकोड सामने लाएं');
+    setScanStatusMsg('Starting camera... Align product QR or Barcode.');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' }
@@ -806,10 +821,10 @@ export default function CounterBillingTab({
           }
         }, 450);
       } else {
-        setScanStatusMsg('ℹ️ नीचे बॉक्स में कोड/नाम स्कैन या टाइप करें:');
+        setScanStatusMsg('Enter or scan barcode manually below:');
       }
-    } catch (err) {
-      setScanStatusMsg('⚠️ कैमरा परमिशन नहीं मिली। नीचे बॉक्स में कोड/नाम डालकर सीधा स्कैन करें:');
+    } catch {
+      setScanStatusMsg('Camera permission unavailable. Enter code manually below:');
     }
   };
 
@@ -836,10 +851,10 @@ export default function CounterBillingTab({
         <head><title>Product QR - ${pName}</title></head>
         <body style="font-family:sans-serif;text-align:center;padding:15px;">
           <div style="border:2px dashed #000;padding:12px;border-radius:10px;display:inline-block;">
-            <div style="font-size:12px;font-weight:bold;">${currentShop?.name || 'SHOP'}</div>
+            <div style="font-size:12px;font-weight:bold;">${currentShop?.name || 'STORE'}</div>
             <h3 style="margin:6px 0;font-size:16px;">${pName}</h3>
             <img src="${qrUrl}" style="width:140px;height:140px;display:block;margin:6px auto;" onload="setTimeout(()=>window.print(),200)" />
-            <div style="font-size:11px;color:#444;">Code: #${prod.code || prod.id}</div>
+            <div style="font-size:11px;color:#444;">SKU: #${prod.code || prod.id}</div>
             <div style="font-size:18px;font-weight:900;margin-top:4px;">MRP / Rate: ₹${price}</div>
           </div>
         </body>
@@ -850,7 +865,7 @@ export default function CounterBillingTab({
 
   const handleAddCustomItem = () => {
     if (!customItemName.trim() || !customItemPrice) {
-      return alert('कृपया सामान का नाम और रेट (Price) लिखें!');
+      return alert('Please enter item name and rate.');
     }
     const price = Math.max(0, parseFloat(customItemPrice) || 0);
     const qty = Math.max(1, parseFloat(customItemQty) || 1);
@@ -886,7 +901,7 @@ export default function CounterBillingTab({
             const liveProd = combinedShopProducts.find((p: any) => String(p.id) === String(item.id));
             const currentMax = liveProd ? getBaseProductStock(liveProd) : item.maxStock;
             if (newQty > currentMax) {
-              alert(`⚠️ स्टॉक रूम में केवल ${currentMax} ${item.unit || 'Pc'} उपलब्ध है!`);
+              alert(`Only ${currentMax} ${item.unit || 'Pc'} available in inventory.`);
               return { ...item, maxStock: currentMax };
             }
           }
@@ -901,17 +916,34 @@ export default function CounterBillingTab({
     setCart(prev => prev.map(item => (item.id === id ? { ...item, price: Math.max(0, newPrice) } : item)));
   };
 
+  // 🔥 PROFESSIONAL GST INCLUSIVE & EXCLUSIVE CALCULATION 🔥
   const subTotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
   const discountAmt = Math.min(subTotal, Math.max(0, parseFloat(discount) || 0));
   const labourAmt = Math.max(0, parseFloat(labourCharge) || 0);
   const transportAmt = Math.max(0, parseFloat(transportCharge) || 0);
-  const taxableAmt = Math.max(0, subTotal - discountAmt);
+
+  const netAfterDiscount = Math.max(0, subTotal - discountAmt);
   const activeGstRate = isGstBillEnabled ? gstPercent : 0;
-  const gstAmt = isGstBillEnabled ? Math.round((taxableAmt * activeGstRate) / 100) : 0;
-  const grandTotal = Math.round(taxableAmt + gstAmt + labourAmt + transportAmt);
+
+  let taxableAmt = netAfterDiscount;
+  let gstAmt = 0;
+
+  if (isGstBillEnabled && activeGstRate > 0) {
+    if (gstType === 'inclusive') {
+      taxableAmt = Number((netAfterDiscount / (1 + activeGstRate / 100)).toFixed(2));
+      gstAmt = Number((netAfterDiscount - taxableAmt).toFixed(2));
+    } else {
+      taxableAmt = netAfterDiscount;
+      gstAmt = Number(((taxableAmt * activeGstRate) / 100).toFixed(2));
+    }
+  }
+
+  const grandTotal = Math.round(
+    (gstType === 'inclusive' ? netAfterDiscount : taxableAmt + gstAmt) + labourAmt + transportAmt
+  );
 
   // ==========================================================
-  // 🔥 STRICT SHOP OWNER UPI QR GENERATOR (NO ADMIN UPI FALLBACK)
+  // 🔥 STRICT SHOP OWNER UPI QR GENERATOR
   // ==========================================================
   const getShopOwnerQrData = (amount: number, billNoStr: string, savedBillUpi?: string) => {
     const rawUpi = String(
@@ -925,8 +957,8 @@ export default function CounterBillingTab({
       return { activeUpi: '', upiUri: '', qrImg: '' };
     }
 
-    const shopTitle = encodeURIComponent(currentShop?.name || 'Shop');
-    const upiUri = `upi://pay?pa=${rawUpi}&pn=${shopTitle}&am=${amount}&cu=INR&tn=Bill_${billNoStr}`;
+    const shopTitle = encodeURIComponent(currentShop?.name || 'Store');
+    const upiUri = `upi://pay?pa=${rawUpi}&pn=${shopTitle}&am=${amount}&cu=INR&tn=Invoice_${billNoStr}`;
     const qrImg = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(upiUri)}`;
     return { activeUpi: rawUpi, upiUri, qrImg };
   };
@@ -935,15 +967,15 @@ export default function CounterBillingTab({
   // 🧾 SAVE COUNTER BILL IN `counter_bills` + `orders` & DEDUCT `total_stock`
   // ==========================================================
   const handleGenerateCounterBill = async () => {
-    if (cart.length === 0) return alert('❌ कृपया बिल बनाने के लिए बाईं तरफ से कम से कम 1 सामान पर क्लिक करें!');
-    const finalCustName = custName.trim() || 'Counter Walk-in Customer';
+    if (cart.length === 0) return alert('Please add at least one item to generate an invoice.');
+    const finalCustName = custName.trim() || 'Walk-in Customer';
     const finalCustPhone = custPhone.trim() || '';
-    const finalCustAddress = custAddress.trim() || 'Direct Shop Counter Pickup';
+    const finalCustAddress = custAddress.trim() || 'Counter Pickup';
     const effectiveGstNo =
       shopGstNumber.trim() ||
       currentShop?.gst_no ||
       currentShop?.gstin ||
-      (isGstBillEnabled ? '09ABCDE1234F1Z5' : '');
+      (isGstBillEnabled ? '10ABCDE1234F1Z5' : '');
 
     const verifiedShopUpi = shopUpiId.trim() || extractProfileShopUpi(currentShop) || '';
 
@@ -954,7 +986,7 @@ export default function CounterBillingTab({
 
       const newOverrides: Record<string, number> = { ...localStockOverrides };
 
-      // 🔥 1. DEDUCT `total_stock` AND INCREMENT `sold_quantity` IN SUPABASE 🔥
+      // 1. DEDUCT `total_stock` AND INCREMENT `sold_quantity` IN SUPABASE
       for (const item of cart) {
         if (!item.isCustom) {
           const { data: freshProd } = await supabase
@@ -1023,7 +1055,7 @@ export default function CounterBillingTab({
         total: c.price * c.qty
       }));
 
-      // 🔥 2. SAVE PERMANENTLY IN DEDICATED `counter_bills` TABLE 🔥
+      // 2. SAVE PERMANENTLY IN DEDICATED `counter_bills` TABLE
       const counterBillPayload = {
         bill_no: billNo,
         shop_id: String(currentShop.id),
@@ -1055,18 +1087,20 @@ export default function CounterBillingTab({
         .select()
         .maybeSingle();
 
-      // 🔥 3. ALSO INSERT INTO `orders` SO SALES LEDGER RECEIVES IT 🔥
+      // 3. ALSO INSERT INTO `orders` SO SALES LEDGER RECEIVES IT
       const billMetaMsg = {
         sender: 'shop_owner',
         type: 'counter_bill',
-        text: `🧾 Counter Bill (${billNo}) | Subtotal: ₹${subTotal} | Discount: ₹${discountAmt} | Labour: ₹${labourAmt} | Transport: ₹${transportAmt} | GST: ₹${gstAmt} | Net: ₹${grandTotal} (${paymentMethod})`,
+        text: `Invoice (${billNo}) | Subtotal: ₹${subTotal} | Discount: ₹${discountAmt} | Labour: ₹${labourAmt} | Transport: ₹${transportAmt} | GST (${gstType}): ₹${gstAmt} | Net: ₹${grandTotal} (${paymentMethod})`,
         subtotal: subTotal,
         discount: discountAmt,
         labourCharge: labourAmt,
         transportCharge: transportAmt,
         isGstBill: isGstBillEnabled,
+        gstType,
         gstPercent: activeGstRate,
-        gstAmt: gstAmt,
+        gstAmt,
+        taxableAmt,
         shopGstNo: effectiveGstNo,
         custGstNo: custGstNumber.trim(),
         custAddress: finalCustAddress,
@@ -1129,8 +1163,10 @@ export default function CounterBillingTab({
         labourCharge: labourAmt,
         transportCharge: transportAmt,
         isGstBill: isGstBillEnabled,
+        gstType,
         gstPercent: activeGstRate,
         gstAmt,
+        taxableAmt,
         shopGstNo: effectiveGstNo,
         custGstNo: custGstNumber.trim(),
         grandTotal,
@@ -1177,7 +1213,7 @@ export default function CounterBillingTab({
       setLabourCharge('0');
       setTransportCharge('0');
     } catch (e: any) {
-      alert('❌ Error generating counter bill: ' + e.message);
+      alert('Error generating invoice: ' + e.message);
     } finally {
       setIsGeneratingBill(false);
     }
@@ -1194,12 +1230,15 @@ export default function CounterBillingTab({
     const isGstVal = Boolean(bill.isGstBill ?? bill.is_gst_bill ?? meta.isGstBill ?? (Number(bill.gstAmt ?? bill.gst_amount ?? meta.gstAmt ?? 0) > 0));
     const gstRateVal = Number(bill.gstPercent ?? bill.gst_percent ?? meta.gstPercent ?? (isGstVal ? 18 : 0));
     const gstAmtVal = Number(bill.gstAmt ?? bill.gst_amount ?? meta.gstAmt ?? 0);
+    const totalVal = Number(bill.grandTotal ?? bill.grand_total ?? bill.total_amount ?? 0);
+    const taxableVal = Number(
+      bill.taxableAmt ?? meta.taxableAmt ?? Math.max(0, totalVal - labourVal - transportVal - gstAmtVal)
+    );
     const shopGstVal = String(
       bill.shopGstNo || bill.shop_gst_no || meta.shopGstNo || shopGstNumber || currentShop?.gst_no || ''
     ).trim();
     const custGstVal = String(bill.custGstNo || bill.customer_gst_no || meta.custGstNo || '').trim();
     const addrVal = String(bill.custAddress || bill.customer_address || bill.address || meta.custAddress || '').trim();
-    const totalVal = Number(bill.grandTotal ?? bill.grand_total ?? bill.total_amount ?? 0);
     const billShopUpiVal = String(bill.shopUpiId || bill.shop_upi_id || meta.shopUpiId || '').trim();
 
     return {
@@ -1210,6 +1249,7 @@ export default function CounterBillingTab({
       isGstVal,
       gstRateVal,
       gstAmtVal,
+      taxableVal,
       shopGstVal,
       custGstVal,
       addrVal,
@@ -1219,7 +1259,7 @@ export default function CounterBillingTab({
   };
 
   // ==========================================================
-  // 🚫 STRICT SEPARATION: COUNTER SALES (`counter_bills`) VS ONLINE ORDERS
+  // 🚫 STRICT SEPARATION: COUNTER SALES VS ONLINE ORDERS
   // ==========================================================
   const isOrderCounterSale = (o: any): boolean => {
     return (
@@ -1250,7 +1290,6 @@ export default function CounterBillingTab({
     return 'cash';
   };
 
-  // 🔥 MERGE `dbCounterBills` (FROM `counter_bills` TABLE) + `orders` + `localCounterBills` 🔥
   const allCounterSalesOnly = useMemo(() => {
     const dbOrdersCounter = (orders || []).filter(
       (o: any) => String(o.shop_id) === String(currentShop?.id) && isOrderCounterSale(o)
@@ -1391,9 +1430,9 @@ export default function CounterBillingTab({
   }, [filteredActiveRecords]);
 
   // ==========================================
-  // 📲 WHATSAPP & 🖨️ PRINT (STRICT SHOP OWNER UPI ONLY)
+  // 📲 WHATSAPP & 🖨️ PRINT INVOICE
   // ==========================================
-  const sendBillOnWhatsApp = (bill: any, isOnlineOrder = false) => {
+  const sendBillOnWhatsApp = (bill: any) => {
     let rawItems = bill.cartItems || bill.items || [];
     if (typeof rawItems === 'string') {
       try {
@@ -1414,33 +1453,33 @@ export default function CounterBillingTab({
     const { activeUpi, upiUri } = getShopOwnerQrData(d.totalVal, String(bNo), d.billShopUpiVal);
 
     const msg =
-      `🏪 *${currentShop?.name || 'SHOP INVOICE'}*%0A` +
+      `🏪 *${currentShop?.name || 'TAX INVOICE'}*%0A` +
       (d.shopGstVal ? `🏛️ *GSTIN:* ${d.shopGstVal}%0A` : '') +
       `📍 ${currentShop?.address || ''}, ${currentShop?.block || ''}%0A` +
-      `📞 मो: ${currentShop?.phone || ''}%0A` +
+      `📞 Contact: ${currentShop?.phone || ''}%0A` +
       `--------------------------------%0A` +
-      `*बिल नं:* #${bNo}%0A` +
-      `*तारीख:* ${new Date(bill.created_at || Date.now()).toLocaleString('en-IN')}%0A` +
-      `*ग्राहक:* ${bill.custName || bill.customer_name}%0A` +
-      (d.addrVal ? `*पता:* ${d.addrVal}%0A` : '') +
-      (d.custGstVal ? `*ग्राहक GSTIN:* ${d.custGstVal}%0A` : '') +
+      `*Invoice No:* #${bNo}%0A` +
+      `*Date:* ${new Date(bill.created_at || Date.now()).toLocaleString('en-IN')}%0A` +
+      `*Customer:* ${bill.custName || bill.customer_name}%0A` +
+      (d.addrVal ? `*Address:* ${d.addrVal}%0A` : '') +
+      (d.custGstVal ? `*Buyer GSTIN:* ${d.custGstVal}%0A` : '') +
       `--------------------------------%0A` +
-      `*सामान का विवरण:*%0A${itemsListText}%0A` +
+      `*Item Details:*%0A${itemsListText}%0A` +
       `--------------------------------%0A` +
       `*Subtotal:* ₹${d.subTotalVal}%0A` +
       (d.discountVal > 0 ? `*Discount:* -₹${d.discountVal}%0A` : '') +
       (d.isGstVal && d.gstAmtVal > 0
-        ? `*CGST (${d.gstRateVal / 2}%):* +₹${(d.gstAmtVal / 2).toFixed(2)}%0A*SGST (${d.gstRateVal / 2}%):* +₹${(d.gstAmtVal / 2).toFixed(2)}%0A`
+        ? `*Taxable Value:* ₹${d.taxableVal.toFixed(2)}%0A*CGST (${d.gstRateVal / 2}%):* ₹${(d.gstAmtVal / 2).toFixed(2)}%0A*SGST (${d.gstRateVal / 2}%):* ₹${(d.gstAmtVal / 2).toFixed(2)}%0A`
         : '') +
-      (d.labourVal > 0 ? `*👷 लेबर चार्ज (Labour):* +₹${d.labourVal}%0A` : '') +
-      (d.transportVal > 0 ? `*🚚 ट्रांसपोर्ट / भाड़ा (Transport):* +₹${d.transportVal}%0A` : '') +
-      `💰 *कुल देय बिल (Grand Total): ₹${d.totalVal}*%0A` +
-      `💳 *पेमेंट मोड:* ${bill.paymentMethod || bill.payment_method || bill.payment_mode}%0A` +
+      (d.labourVal > 0 ? `*Labour Charges:* +₹${d.labourVal}%0A` : '') +
+      (d.transportVal > 0 ? `*Transport / Freight:* +₹${d.transportVal}%0A` : '') +
+      `💰 *Grand Total: ₹${d.totalVal}*%0A` +
+      `💳 *Payment Mode:* ${bill.paymentMethod || bill.payment_method || bill.payment_mode}%0A` +
       (activeUpi
-        ? `🏦 *Shop UPI ID:* ${activeUpi}%0A📲 *Pay Link:* ${encodeURIComponent(upiUri)}%0A`
+        ? `🏦 *Store UPI:* ${activeUpi}%0A📲 *Pay via UPI:* ${encodeURIComponent(upiUri)}%0A`
         : '') +
       `--------------------------------%0A` +
-      `🙏 धन्यवाद!`;
+      `Thank you for your business!`;
 
     const cleanPhone = String(bill.custPhone || bill.customer_phone || bill.phone || '').replace(/\D/g, '');
     const waPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
@@ -1448,7 +1487,7 @@ export default function CounterBillingTab({
     window.open(waUrl, '_blank');
   };
 
-  const printInvoiceWithQr = (bill: any, format: 'thermal' | 'a4' = 'thermal', isOnlineOrder = false) => {
+  const printInvoiceWithQr = (bill: any, format: 'thermal' | 'a4' = 'thermal') => {
     const printWin = window.open('', '_blank', format === 'thermal' ? 'width=420,height=780' : 'width=860,height=920');
     if (!printWin) return window.print();
 
@@ -1485,7 +1524,7 @@ export default function CounterBillingTab({
     printWin.document.write(`
       <html>
         <head>
-          <title>${d.isGstVal ? 'GST Tax Invoice' : 'Invoice'} #${bNo}</title>
+          <title>${d.isGstVal ? 'Tax Invoice' : 'Invoice'} #${bNo}</title>
           <style>
             body { font-family: 'Segoe UI', monospace, sans-serif; padding: 15px; max-width: ${maxWidthCss}; margin: 0 auto; color: #000; }
             h2, h3, h4, p { margin: 3px 0; }
@@ -1500,8 +1539,8 @@ export default function CounterBillingTab({
         </head>
         <body>
           <div class="center">
-            ${d.isGstVal ? `<span class="badge">🏛️ TAX INVOICE (GST BILL)</span>` : ''}
-            <h2 style="font-size:${format === 'thermal' ? '19px' : '25px'};margin-top:4px;">${currentShop?.name || 'SHOP INVOICE'}</h2>
+            ${d.isGstVal ? `<span class="badge">TAX INVOICE (GST)</span>` : `<span class="badge">CASH MEMO / BILL</span>`}
+            <h2 style="font-size:${format === 'thermal' ? '19px' : '25px'};margin-top:4px;">${currentShop?.name || 'STORE INVOICE'}</h2>
             ${d.shopGstVal ? `<p style="font-size:12px;font-weight:900;">GSTIN: ${d.shopGstVal}</p>` : ''}
             <p style="font-size:11.5px;">${currentShop?.address || ''}, ${currentShop?.block || ''} ${currentShop?.pincode ? '- ' + currentShop.pincode : ''}</p>
             <p style="font-size:11.5px;"><strong>Phone:</strong> +91 ${currentShop?.phone || ''}</p>
@@ -1509,16 +1548,16 @@ export default function CounterBillingTab({
           <div class="divider"></div>
           <div style="display:flex;justify-content:space-between;font-size:11.5px;flex-wrap:wrap;gap:6px;">
             <div style="max-width:60%;">
-              <p><strong>Bill No:</strong> #${bNo}</p>
+              <p><strong>Invoice No:</strong> #${bNo}</p>
               <p><strong>Customer:</strong> ${bill.custName || bill.customer_name}</p>
-              ${bill.custPhone || bill.customer_phone || bill.phone ? `<p><strong>Mob:</strong> ${bill.custPhone || bill.customer_phone || bill.phone}</p>` : ''}
+              ${bill.custPhone || bill.customer_phone || bill.phone ? `<p><strong>Mobile:</strong> ${bill.custPhone || bill.customer_phone || bill.phone}</p>` : ''}
               ${d.addrVal ? `<p><strong>Address:</strong> ${d.addrVal}</p>` : ''}
               ${d.custGstVal ? `<p><strong>Buyer GSTIN:</strong> ${d.custGstVal}</p>` : ''}
             </div>
             <div style="text-align:right;">
               <p><strong>Date:</strong> ${new Date(bill.created_at || Date.now()).toLocaleDateString('en-IN')}</p>
               <p><strong>Time:</strong> ${new Date(bill.created_at || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p>
-              <p><strong>Pay Mode:</strong> ${bill.paymentMethod || bill.payment_method || bill.payment_mode}</p>
+              <p><strong>Payment:</strong> ${bill.paymentMethod || bill.payment_method || bill.payment_mode}</p>
             </div>
           </div>
           <table>
@@ -1535,21 +1574,21 @@ export default function CounterBillingTab({
           <div class="divider"></div>
           <div style="font-size:12px;text-align:right;line-height:1.6;">
             <div>Items Subtotal: <strong>₹${d.subTotalVal}</strong></div>
-            ${d.discountVal > 0 ? `<div>Discount (छूट): <strong>-₹${d.discountVal}</strong></div>` : ''}
+            ${d.discountVal > 0 ? `<div>Discount: <strong>-₹${d.discountVal}</strong></div>` : ''}
             ${
               d.isGstVal
                 ? `
               <div class="gst-summary-box" style="text-align:right;">
-                <div>Taxable Value: ₹${Math.max(0, d.subTotalVal - d.discountVal)}</div>
-                <div>CGST (@${halfGstRate}%): +₹${halfGstAmt}</div>
-                <div>SGST (@${halfGstRate}%): +₹${halfGstAmt}</div>
-                <div><strong>Total GST (${d.gstRateVal}%): +₹${d.gstAmtVal}</strong></div>
+                <div>Taxable Value: ₹${d.taxableVal.toFixed(2)}</div>
+                <div>CGST (@${halfGstRate}%): ₹${halfGstAmt}</div>
+                <div>SGST (@${halfGstRate}%): ₹${halfGstAmt}</div>
+                <div><strong>Total GST (${d.gstRateVal}%): ₹${d.gstAmtVal.toFixed(2)}</strong></div>
               </div>
             `
                 : ''
             }
-            ${d.labourVal > 0 ? `<div>👷 Labour Charge (लेबर चार्ज): <strong>+₹${d.labourVal}</strong></div>` : ''}
-            ${d.transportVal > 0 ? `<div>🚚 Transport Charge (भाड़ा): <strong>+₹${d.transportVal}</strong></div>` : ''}
+            ${d.labourVal > 0 ? `<div>Labour Charges: <strong>+₹${d.labourVal}</strong></div>` : ''}
+            ${d.transportVal > 0 ? `<div>Transport / Freight: <strong>+₹${d.transportVal}</strong></div>` : ''}
           </div>
           <div class="divider"></div>
           <h3 style="text-align:right;font-size:${format === 'thermal' ? '17px' : '21px'};margin:6px 0;">GRAND TOTAL: ₹${d.totalVal}</h3>
@@ -1558,14 +1597,14 @@ export default function CounterBillingTab({
             activeUpi && qrImg
               ? `
             <div class="qr-box">
-              <p style="font-size:11px;font-weight:bold;margin-bottom:4px;">📱 Scan QR to Pay ₹${d.totalVal} to ${currentShop?.name || 'Shop'}</p>
-              <img id="shopQrImg" src="${qrImg}" alt="Shop Payment QR" style="width:130px;height:130px;display:block;margin:4px auto;" />
-              <p style="font-size:10.5px;"><strong>Shop UPI ID:</strong> ${activeUpi}</p>
+              <p style="font-size:11px;font-weight:bold;margin-bottom:4px;">Scan QR to Pay ₹${d.totalVal} to ${currentShop?.name || 'Store'}</p>
+              <img id="shopQrImg" src="${qrImg}" alt="Payment QR" style="width:130px;height:130px;display:block;margin:4px auto;" />
+              <p style="font-size:10.5px;"><strong>UPI ID:</strong> ${activeUpi}</p>
             </div>
           `
               : ''
           }
-          <p class="center" style="font-size:11px;margin-top:10px;">🙏 हमारे यहाँ से खरीदारी करने के लिए धन्यवाद!</p>
+          <p class="center" style="font-size:11px;margin-top:10px;">Thank you for shopping with us!</p>
           <script>
             const img = document.getElementById('shopQrImg');
             if (img) {
@@ -1585,17 +1624,17 @@ export default function CounterBillingTab({
   // 📥 SEPARATE EXCEL & PDF EXPORT FOR ACTIVE TAB
   // ==========================================
   const exportActiveTabToExcel = () => {
-    if (filteredActiveRecords.length === 0) return alert('डाउनलोड करने के लिए कोई बिल उपलब्ध नहीं है!');
+    if (filteredActiveRecords.length === 0) return alert('No records available to export.');
     const reportTypeTitle = posSubView === 'online_history' ? 'ONLINE_ORDERS_REPORT' : 'COUNTER_POS_SALES_REPORT';
 
     const csvRows: string[] = [];
-    csvRows.push(`"${currentShop?.name || 'Shop'} - ${reportTypeTitle}"`);
+    csvRows.push(`"${currentShop?.name || 'Store'} - ${reportTypeTitle}"`);
     csvRows.push(`"Generated On","${new Date().toLocaleString('en-IN')}","Filter","${dateRangePreset.toUpperCase()}"`);
     csvRows.push(
-      `"Total Revenue","Rs ${activeMetrics.totalAmt}","Cash Galla","Rs ${activeMetrics.cashAmt}","Shop Owner Bank/UPI","Rs ${activeMetrics.upiAmt}","Khata Due","Rs ${activeMetrics.khataAmt}"`
+      `"Total Revenue","Rs ${activeMetrics.totalAmt}","Cash","Rs ${activeMetrics.cashAmt}","UPI / Bank","Rs ${activeMetrics.upiAmt}","Credit / Khata","Rs ${activeMetrics.khataAmt}"`
     );
     csvRows.push('');
-    csvRows.push('"Bill / Order No","Date & Time","Customer Name","Phone","Address","Payment Mode","Payment Bucket","Labour Charge","Transport Charge","GST Amt","Items Sold","Total Amount (Rs)"');
+    csvRows.push('"Invoice No","Date & Time","Customer Name","Phone","Address","Payment Mode","Payment Bucket","Labour","Transport","GST Amt","Items","Total Amount (Rs)"');
 
     filteredActiveRecords.forEach((o: any) => {
       const bucket = getPayBucket(o);
@@ -1620,7 +1659,7 @@ export default function CounterBillingTab({
           `"${o.customer_phone || o.phone || o.custPhone || ''}"`,
           `"${d.addrVal.replace(/"/g, '""')}"`,
           `"${o.paymentMethod || o.payment_method || o.payment_mode || 'Cash'}"`,
-          `"${bucket === 'upi' ? 'Shop Owner Bank/UPI' : bucket === 'cash' ? 'Cash in Hand' : 'Khata Due'}"`,
+          `"${bucket === 'upi' ? 'Bank / UPI' : bucket === 'cash' ? 'Cash' : 'Credit / Khata'}"`,
           `"${d.labourVal}"`,
           `"${d.transportVal}"`,
           `"${d.gstAmtVal}"`,
@@ -1632,7 +1671,7 @@ export default function CounterBillingTab({
 
     csvRows.push('');
     csvRows.push('"--- PRODUCT-WISE SUMMARY ---"');
-    csvRows.push('"Product Name","Category","Total Sold Qty","Total Revenue (Rs)"');
+    csvRows.push('"Product Name","Category","Sold Qty","Total Revenue (Rs)"');
     activeProductsSoldList.forEach(p => {
       csvRows.push([`"${p.name.replace(/"/g, '""')}"`, `"${p.category}"`, `"${p.qty} ${p.unit}"`, `"${p.revenue}"`].join(','));
     });
@@ -1675,7 +1714,7 @@ export default function CounterBillingTab({
             <td>${new Date(o.created_at || Date.now()).toLocaleString('en-IN')}</td>
             <td>${o.customer_name || o.custName || 'Walk-in'}<br/><small>${o.customer_phone || o.phone || ''} ${d.addrVal ? `| ${d.addrVal}` : ''}</small></td>
             <td>${itemsText}</td>
-            <td>${bucket === 'upi' ? '🏦 Shop Bank/UPI' : bucket === 'cash' ? '💵 Cash' : '📒 Khata Due'}</td>
+            <td>${bucket === 'upi' ? 'Bank / UPI' : bucket === 'cash' ? 'Cash' : 'Credit / Khata'}</td>
             <td style="text-align:right;font-weight:bold;">₹${d.totalVal}</td>
           </tr>
         `;
@@ -1696,17 +1735,17 @@ export default function CounterBillingTab({
           </style>
         </head>
         <body>
-          <h2>🏪 ${currentShop?.name || 'SHOP'} ${shopGstNumber ? `(GSTIN: ${shopGstNumber})` : ''} — ${isOnline ? '🌐 Online App Orders Report' : '🏪 Shop Counter POS Sales Report'}</h2>
-          <p>Date: ${new Date().toLocaleString('en-IN')} | Total Records: ${activeMetrics.totalCount}</p>
+          <h2>${currentShop?.name || 'STORE'} ${shopGstNumber ? `(GSTIN: ${shopGstNumber})` : ''} — ${isOnline ? 'Online Orders Report' : 'Counter POS Sales Report'}</h2>
+          <p>Generated: ${new Date().toLocaleString('en-IN')} | Total Records: ${activeMetrics.totalCount}</p>
           <div class="grid">
-            <div class="card"><strong>कुल बिक्री (Total)</strong><h3>₹${activeMetrics.totalAmt}</h3></div>
-            <div class="card"><strong>नकद गल्ला (Cash)</strong><h3>₹${activeMetrics.cashAmt} (${activeMetrics.cashCount})</h3></div>
-            <div class="card"><strong>दुकानदार Account (UPI)</strong><h3>₹${activeMetrics.upiAmt} (${activeMetrics.upiCount})</h3></div>
-            <div class="card"><strong>उधार / खाता (Due)</strong><h3>₹${activeMetrics.khataAmt} (${activeMetrics.khataCount})</h3></div>
+            <div class="card"><strong>Total Sales</strong><h3>₹${activeMetrics.totalAmt}</h3></div>
+            <div class="card"><strong>Cash</strong><h3>₹${activeMetrics.cashAmt} (${activeMetrics.cashCount})</h3></div>
+            <div class="card"><strong>Bank / UPI</strong><h3>₹${activeMetrics.upiAmt} (${activeMetrics.upiCount})</h3></div>
+            <div class="card"><strong>Credit / Khata</strong><h3>₹${activeMetrics.khataAmt} (${activeMetrics.khataCount})</h3></div>
           </div>
           <table>
             <thead>
-              <tr><th>#</th><th>Bill No</th><th>Date</th><th>Customer & Address</th><th>Products</th><th>Payment</th><th style="text-align:right;">Total</th></tr>
+              <tr><th>#</th><th>Invoice No</th><th>Date</th><th>Customer</th><th>Items</th><th>Payment</th><th style="text-align:right;">Total</th></tr>
             </thead>
             <tbody>${rowsHtml}</tbody>
           </table>
@@ -1748,7 +1787,7 @@ export default function CounterBillingTab({
     });
 
     const assignOrderToBoy = async (boy: any) => {
-      if (!selectedOrderForAssign) return alert('कृपया पहले ऊपर ड्रॉपडाउन से कोई पेंडिंग आर्डर चुनें!');
+      if (!selectedOrderForAssign) return alert('Please select a pending online order first.');
       try {
         const { error } = await supabase
           .from('orders')
@@ -1760,10 +1799,10 @@ export default function CounterBillingTab({
           })
           .eq('id', selectedOrderForAssign);
         if (error) throw new Error(error.message);
-        alert(`✅ आर्डर #${selectedOrderForAssign} डिलीवरी पार्टनर "${boy.name}" को सौंप दिया गया है!`);
+        alert(`Order #${selectedOrderForAssign} assigned to ${boy.name}.`);
         fetchOrders(currentShop?.id, true);
       } catch (e: any) {
-        alert('❌ Error: ' + e.message);
+        alert('Error: ' + e.message);
       }
     };
 
@@ -1775,23 +1814,23 @@ export default function CounterBillingTab({
     return (
       <div style={{ color: 'white' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '15px' }}>
-          <h2 style={{ margin: 0, color: '#38bdf8', fontSize: '20px' }}>🛵 आपके ब्लॉक व पिनकोड के डिलीवरी पार्टनर</h2>
+          <h2 style={{ margin: 0, color: '#38bdf8', fontSize: '20px' }}>🛵 Area Delivery Partners</h2>
           <button onClick={fetchAreaDeliveryPartners} style={{ background: '#0284c7', color: 'white', border: 'none', padding: '8px 14px', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
-            🔄 रिफ्रेश करें
+            🔄 Refresh List
           </button>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px', background: '#0f172a', padding: '14px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '15px' }}>
           <input
             type="text"
-            placeholder="🏢 ब्लॉक खोजें (Bithan / Rosera)..."
+            placeholder="Filter by Block..."
             value={filterBlock}
             onChange={e => setFilterBlock(e.target.value)}
             style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #475569', background: '#1e293b', color: 'white', boxSizing: 'border-box' }}
           />
           <input
             type="text"
-            placeholder="📮 पिनकोड खोजें (848207)..."
+            placeholder="Filter by Pincode..."
             value={filterPincode}
             onChange={e => setFilterPincode(e.target.value)}
             style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #475569', background: '#1e293b', color: 'white', boxSizing: 'border-box' }}
@@ -1801,7 +1840,7 @@ export default function CounterBillingTab({
             onChange={e => setSelectedOrderForAssign(e.target.value)}
             style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #f59e0b', background: '#1e293b', color: 'white', boxSizing: 'border-box' }}
           >
-            <option value="">-- डिलीवरी के लिए ऑनलाइन आर्डर चुनें --</option>
+            <option value="">-- Select Pending Online Order --</option>
             {pendingShopOrders.map((o: any) => (
               <option key={o.id} value={o.id}>
                 Order #{o.order_no || o.id} - {o.customer_name} (PIN: {o.pincode || 'N/A'})
@@ -1817,16 +1856,16 @@ export default function CounterBillingTab({
               <div key={boy.id} style={{ background: '#0f172a', border: '1px solid #334155', borderLeft: '5px solid #22c55e', borderRadius: '12px', padding: '15px' }}>
                 <div style={{ fontSize: '16px', fontWeight: '900', color: 'white' }}>🛵 {boy.name}</div>
                 <div style={{ fontSize: '12px', color: '#cbd5e1', margin: '8px 0' }}>
-                  <div><strong>🏢 ब्लॉक:</strong> {allBlocks || boy.district}</div>
-                  <div><strong>📮 पिनकोड:</strong> <span style={{ color: '#4ade80' }}>{allPincodes || 'All'}</span></div>
+                  <div><strong>Block:</strong> {allBlocks || boy.district}</div>
+                  <div><strong>Pincode:</strong> <span style={{ color: '#4ade80' }}>{allPincodes || 'All'}</span></div>
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button onClick={() => { window.location.href = `tel:${boy.phone}`; }} style={{ flex: 1, padding: '10px', background: '#0284c7', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
-                    📞 कॉल करें
+                    📞 Call Partner
                   </button>
                   {selectedOrderForAssign && (
                     <button onClick={() => assignOrderToBoy(boy)} style={{ flex: 1.3, padding: '10px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', cursor: 'pointer' }}>
-                      ✅ आर्डर सौंपें
+                      ✅ Assign Order
                     </button>
                   )}
                 </div>
@@ -1839,7 +1878,7 @@ export default function CounterBillingTab({
   }
 
   // ==========================================================
-  // 🔒 STRICT SUBSCRIPTION LOCK SCREEN (WAITS FOR ADMIN APPROVAL)
+  // 🔒 STRICT SUBSCRIPTION LOCK SCREEN
   // ==========================================================
   const isPosActive = checkIsPosActive();
   const posExpiry = getPosExpiryDate();
@@ -1849,15 +1888,15 @@ export default function CounterBillingTab({
       String(currentShop?.pos_plan_status || '').toLowerCase() === 'pending');
 
   if (!isPosActive) {
-    const upiLink = `upi://pay?pa=${adminUpi}&pn=Fixifiy%20Counter%20POS&am=${selectedPlan.price}&cu=INR&tn=POS_Plan_${currentShop?.id || ''}`;
+    const upiLink = `upi://pay?pa=${adminUpi}&pn=Fixifiy%20Enterprise%20POS&am=${selectedPlan.price}&cu=INR&tn=POS_Plan_${currentShop?.id || ''}`;
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(upiLink)}`;
 
     return (
       <div style={{ color: 'white', maxWidth: '880px', margin: '0 auto' }}>
         <div style={{ background: 'linear-gradient(135deg, #4f46e5 0%, #0f172a 100%)', padding: '22px', borderRadius: '16px', border: '2px solid #38bdf8', marginBottom: '18px', textAlign: 'center' }}>
-          <h2 style={{ margin: '6px 0', fontSize: '22px', color: '#fff' }}>🧾 अपनी दुकान का प्रोफेशनल काउंटर बिलिंग (POS) चालू करें</h2>
+          <h2 style={{ margin: '6px 0', fontSize: '22px', color: '#fff' }}>🧾 Activate Enterprise Counter Billing (POS)</h2>
           <p style={{ color: '#e2e8f0', fontSize: '13px', margin: 0 }}>
-            50-50 Split POS Screen, प्रोडक्ट QR स्कैनर, ऑटो-स्टॉक माइनस, लेबर/भाड़ा चार्ज, GST बिल प्रिंट और अलग-अलग हिसाब।
+            Full-Screen POS, Barcode/QR Scanner, Real-Time Inventory Deduction, GST Inclusive/Exclusive Invoicing & GSTR-1 Export.
           </p>
         </div>
 
@@ -1867,19 +1906,19 @@ export default function CounterBillingTab({
               ⏳ ADMIN VERIFICATION PENDING
             </span>
             <h3 style={{ margin: '10px 0 6px 0', color: '#fff', fontSize: '19px' }}>
-              🔒 आपका पेमेंट UTR वेरिफिकेशन के लिए एडमिन के पास भेजा गया है
+              Payment UTR Submitted for Verification
             </h3>
             <p style={{ color: '#fde68a', fontSize: '13px', maxWidth: '620px', margin: '0 auto 12px auto', lineHeight: '1.5' }}>
-              UTR नंबर: <strong>{pendingPaymentRecord?.utr_number || currentShop?.pos_plan_details?.utr || 'Submitted'}</strong> | राशि: <strong>₹{pendingPaymentRecord?.amount || selectedPlan.price}</strong>
+              UTR Number: <strong>{pendingPaymentRecord?.utr_number || currentShop?.pos_plan_details?.utr || 'Submitted'}</strong> | Amount: <strong>₹{pendingPaymentRecord?.amount || selectedPlan.price}</strong>
               <br />
-              जब तक मास्टर एडमिन आपके UTR को वेरीफाई करके <strong>Approve</strong> नहीं करते, तब तक काउंटर बिलिंग लॉक रहेगा।
+              Your Counter Billing system will unlock automatically once Admin approves your payment.
             </p>
             <button
               disabled={isCheckingStatus}
               onClick={() => fetchAdminUpiAndPlanStatus(true)}
               style={{ background: '#38bdf8', color: '#0f172a', border: 'none', padding: '10px 20px', borderRadius: '10px', fontWeight: '900', fontSize: '13.5px', cursor: 'pointer' }}
             >
-              {isCheckingStatus ? '⏳ चेक हो रहा है...' : '🔄 एडमिन अप्रूवल स्टेटस रिफ्रेश करें'}
+              {isCheckingStatus ? 'Checking...' : '🔄 Refresh Approval Status'}
             </button>
           </div>
         )}
@@ -1902,7 +1941,7 @@ export default function CounterBillingTab({
                 <span style={{ background: '#fbbf24', color: '#0f172a', padding: '3px 8px', borderRadius: '6px', fontSize: '10px', fontWeight: '900' }}>{plan.badge}</span>
                 <div style={{ fontSize: '15px', fontWeight: 'bold', marginTop: '10px' }}>{plan.name}</div>
                 <div style={{ fontSize: '26px', fontWeight: '900', color: '#4ade80', margin: '6px 0' }}>₹{plan.price}</div>
-                <div style={{ fontSize: '11px', color: '#cbd5e1' }}>वैधता: {plan.days} दिन</div>
+                <div style={{ fontSize: '11px', color: '#cbd5e1' }}>Validity: {plan.days} Days</div>
               </div>
             );
           })}
@@ -1911,16 +1950,16 @@ export default function CounterBillingTab({
         <div style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: '16px', padding: '20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '20px', alignItems: 'center' }}>
           <div style={{ textAlign: 'center', background: '#1e293b', padding: '15px', borderRadius: '12px' }}>
             <img src={qrUrl} alt="Company UPI QR" style={{ width: '170px', height: '170px', borderRadius: '10px', border: '4px solid white', margin: '0 auto 8px auto', display: 'block' }} />
-            <div style={{ fontSize: '12px', color: '#cbd5e1' }}>Company UPI: <strong style={{ color: '#fff' }}>{adminUpi}</strong></div>
+            <div style={{ fontSize: '12px', color: '#cbd5e1' }}>Official UPI: <strong style={{ color: '#fff' }}>{adminUpi}</strong></div>
           </div>
           <div>
-            <h3 style={{ margin: '0 0 8px 0', color: '#fbbf24' }}>✅ पेमेंट के बाद 12-अंकों का UTR सबमिट करें</h3>
+            <h3 style={{ margin: '0 0 8px 0', color: '#fbbf24' }}>Submit 12-Digit UTR Number</h3>
             <p style={{ fontSize: '12px', color: '#94a3b8', marginTop: 0 }}>
-              नोट: गलत UTR डालने पर एडमिन द्वारा रिजेक्ट कर दिया जाएगा। केवल सही पेमेंट के बाद ही एडमिन अप्रूवल मिलेगा।
+              Complete the UPI payment and enter your 12-digit UTR / Reference Number below for verification.
             </p>
             <input
               type="text"
-              placeholder="12-Digit UTR Number यहाँ लिखें..."
+              placeholder="Enter 12-Digit UTR Number..."
               value={utrNumber}
               onChange={e => setUtrNumber(e.target.value)}
               style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '2px solid #38bdf8', background: '#1e293b', color: 'white', fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', boxSizing: 'border-box' }}
@@ -1930,7 +1969,7 @@ export default function CounterBillingTab({
               onClick={handleSubscribePlan}
               style={{ width: '100%', padding: '14px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '10px', fontWeight: '900', fontSize: '15px', cursor: 'pointer' }}
             >
-              {isSubmittingPlan ? '⏳ सबमिट हो रहा है...' : `📤 ₹${selectedPlan.price} का UTR एडमिन अप्रूवल के लिए भेजें`}
+              {isSubmittingPlan ? 'Submitting...' : `Submit ₹${selectedPlan.price} UTR for Approval`}
             </button>
           </div>
         </div>
@@ -1939,7 +1978,7 @@ export default function CounterBillingTab({
   }
 
   // ==========================================================
-  // 🎨 COMPACT 50-50 AUTO-ADJUST POS & SEPARATE HISTORY UI
+  // 🎨 MAIN ENTERPRISE POS UI (WITH DEDICATED FULL-SCREEN MODE)
   // ==========================================================
   const liveBillQr = getShopOwnerQrData(grandTotal, 'LIVE');
   const displayShopGst = shopGstNumber.trim() || currentShop?.gst_no || currentShop?.gstin || '';
@@ -1953,8 +1992,28 @@ export default function CounterBillingTab({
     'linear-gradient(135deg, #0891b2, #0e7490)'
   ];
 
+  const containerStyle: React.CSSProperties = isFullScreenPos
+    ? {
+        position: 'fixed',
+        inset: 0,
+        zIndex: 9990,
+        background: '#020617',
+        color: 'white',
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        padding: '12px',
+        boxSizing: 'border-box'
+      }
+    : {
+        color: 'white',
+        width: '100%',
+        maxWidth: '100%',
+        overflowX: 'hidden',
+        boxSizing: 'border-box'
+      };
+
   return (
-    <div style={{ color: 'white', width: '100%', maxWidth: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
+    <div style={containerStyle}>
       <style>{`
         .pos-flex-split-container {
           display: flex;
@@ -1974,7 +2033,7 @@ export default function CounterBillingTab({
           display: flex;
           flex-direction: column;
           gap: 8px;
-          max-height: 600px;
+          max-height: ${isFullScreenPos ? 'calc(100vh - 230px)' : '600px'};
           overflow-y: auto;
           padding-right: 4px;
         }
@@ -2009,6 +2068,7 @@ export default function CounterBillingTab({
         @media (max-width: 900px) {
           .pos-flex-split-container {
             flex-direction: column;
+            padding-bottom: 68px;
           }
           .pos-half-pane {
             flex: 1 1 100%;
@@ -2026,7 +2086,7 @@ export default function CounterBillingTab({
             background: linear-gradient(90deg, #1e1b4b, #312e81);
             border-top: 2px solid #38bdf8;
             padding: 10px 14px;
-            z-index: 999;
+            z-index: 9995;
             justify-content: space-between;
             align-items: center;
             box-shadow: 0 -4px 16px rgba(0,0,0,0.6);
@@ -2035,7 +2095,7 @@ export default function CounterBillingTab({
       `}</style>
 
       {/* ========================================================== */}
-      {/* 🌈 TOP NAVIGATION BAR: AUTO GSTIN & SHOP UPI STATUS         */}
+      {/* 🌈 TOP NAVIGATION BAR + FULL-SCREEN DEDICATED POS BUTTON   */}
       {/* ========================================================== */}
       <div
         style={{
@@ -2051,27 +2111,27 @@ export default function CounterBillingTab({
           <div style={{ minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <span style={{ background: '#f59e0b', color: '#0f172a', padding: '2px 8px', borderRadius: '12px', fontSize: '10.5px', fontWeight: '900' }}>
-                ✨ ENTERPRISE POS
+                ENTERPRISE POS
               </span>
               <h2 style={{ margin: 0, fontSize: '17px', color: '#ffffff', fontWeight: '900' }}>
-                🏪 {currentShop?.name || 'Counter Billing System'}
+                🏪 {currentShop?.name || 'Counter Billing Terminal'}
               </h2>
               {displayShopGst && (
                 <span style={{ background: '#065f46', color: '#4ade80', border: '1px solid #22c55e', padding: '2px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '900' }}>
-                  🏛️ GSTIN: {displayShopGst}
+                  GSTIN: {displayShopGst}
                 </span>
               )}
             </div>
 
             <div style={{ fontSize: '11.5px', color: '#a5b4fc', marginTop: '5px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              <span>● वैधता: {posExpiry ? posExpiry.toLocaleDateString('en-IN') : 'Active'}</span>
+              <span>● Valid Till: {posExpiry ? posExpiry.toLocaleDateString('en-IN') : 'Active'}</span>
               <span>|</span>
               <span>
-                🏦 Shop UPI:{' '}
+                Store UPI:{' '}
                 {liveBillQr.activeUpi ? (
                   <strong style={{ color: '#4ade80' }}>{liveBillQr.activeUpi}</strong>
                 ) : (
-                  <strong style={{ color: '#f87171' }}>⚠️ UPI ID Not Found</strong>
+                  <strong style={{ color: '#f87171' }}>Not Configured</strong>
                 )}
               </span>
               <button
@@ -2087,7 +2147,7 @@ export default function CounterBillingTab({
                   cursor: 'pointer'
                 }}
               >
-                ✏️ {liveBillQr.activeUpi ? 'UPI बदलें' : '+ अपना UPI जोड़ें'}
+                {liveBillQr.activeUpi ? 'Edit UPI' : '+ Add UPI'}
               </button>
               <button
                 onClick={() => setIsEditingGst(!isEditingGst)}
@@ -2102,17 +2162,17 @@ export default function CounterBillingTab({
                   cursor: 'pointer'
                 }}
               >
-                🏛️ {displayShopGst ? 'GST नं बदलें' : '+ अपना GST नं जोड़ें'}
+                {displayShopGst ? 'Edit GSTIN' : '+ Add GSTIN'}
               </button>
             </div>
           </div>
 
-          {/* 3 SEPARATE NAVIGATION TABS */}
-          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+          {/* 4 NAVIGATION TABS + DEDICATED FULL-SCREEN BUTTON */}
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
             <button
               onClick={() => setPosSubView('pos_screen')}
               style={{
-                padding: '8px 13px',
+                padding: '8px 12px',
                 borderRadius: '8px',
                 border: posSubView === 'pos_screen' ? '2px solid #fff' : '1px solid #475569',
                 background: posSubView === 'pos_screen' ? 'linear-gradient(135deg, #f59e0b, #ea580c)' : '#1e293b',
@@ -2122,7 +2182,7 @@ export default function CounterBillingTab({
                 cursor: 'pointer'
               }}
             >
-              🛒 1. काउंटर बिलिंग (POS)
+              🛒 1. Counter POS
             </button>
 
             <button
@@ -2131,7 +2191,7 @@ export default function CounterBillingTab({
                 fetchCounterBillsFromDb();
               }}
               style={{
-                padding: '8px 13px',
+                padding: '8px 12px',
                 borderRadius: '8px',
                 border: posSubView === 'counter_history' ? '2px solid #fff' : '1px solid #475569',
                 background: posSubView === 'counter_history' ? 'linear-gradient(135deg, #10b981, #059669)' : '#1e293b',
@@ -2141,13 +2201,13 @@ export default function CounterBillingTab({
                 cursor: 'pointer'
               }}
             >
-              🏪 2. काउंटर सेल हिस्ट्री ({allCounterSalesOnly.length})
+              🧾 2. Counter Sales ({allCounterSalesOnly.length})
             </button>
 
             <button
               onClick={() => setPosSubView('online_history')}
               style={{
-                padding: '8px 13px',
+                padding: '8px 12px',
                 borderRadius: '8px',
                 border: posSubView === 'online_history' ? '2px solid #fff' : '1px solid #475569',
                 background: posSubView === 'online_history' ? 'linear-gradient(135deg, #8b5cf6, #6d28d9)' : '#1e293b',
@@ -2157,65 +2217,99 @@ export default function CounterBillingTab({
                 cursor: 'pointer'
               }}
             >
-              🌐 3. ऑनलाइन आर्डर सेल ({allOnlineSalesOnly.length})
+              🌐 3. Online Orders ({allOnlineSalesOnly.length})
+            </button>
+
+            <button
+              onClick={() => setPosSubView('gst_return')}
+              style={{
+                padding: '8px 12px',
+                borderRadius: '8px',
+                border: posSubView === 'gst_return' ? '2px solid #fff' : '1px solid #475569',
+                background: posSubView === 'gst_return' ? 'linear-gradient(135deg, #0d9488, #0f766e)' : '#1e293b',
+                color: 'white',
+                fontWeight: '900',
+                fontSize: '12px',
+                cursor: 'pointer'
+              }}
+            >
+              🏛️ 4. GST Returns
+            </button>
+
+            {/* 🖥️ DEDICATED FULL-SCREEN POS MODE BUTTON */}
+            <button
+              onClick={toggleFullScreenPos}
+              title="Run dedicated Counter Billing full-screen on Mobile or Laptop"
+              style={{
+                padding: '8px 12px',
+                borderRadius: '8px',
+                border: isFullScreenPos ? '2px solid #fca5a5' : '2px solid #38bdf8',
+                background: isFullScreenPos ? '#dc2626' : '#0284c7',
+                color: 'white',
+                fontWeight: '900',
+                fontSize: '12px',
+                cursor: 'pointer'
+              }}
+            >
+              {isFullScreenPos ? '✖ Exit Full-Screen' : '🖥️ Full-Screen POS'}
             </button>
           </div>
         </div>
 
         {isEditingUpi && (
           <div style={{ marginTop: '10px', background: '#0f172a', padding: '10px', borderRadius: '10px', border: '1px solid #38bdf8', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-            <span style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 'bold' }}>🏦 अपनी दुकान का UPI ID डालें (प्रोफाइल और बिल QR के लिए):</span>
+            <span style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 'bold' }}>Store UPI ID (For Invoice Payment QR):</span>
             <input
               type="text"
-              placeholder="उदा: 9876543210@ybl या shop@okaxis"
+              placeholder="e.g. 9876543210@ybl"
               value={shopUpiId}
               onChange={e => setShopUpiId(e.target.value)}
               style={{ flex: 1, minWidth: '180px', padding: '7px 10px', borderRadius: '6px', border: '1px solid #475569', background: '#1e293b', color: '#4ade80', fontWeight: 'bold' }}
             />
             <button onClick={saveShopOwnerUpi} style={{ background: '#16a34a', color: 'white', border: 'none', padding: '7px 14px', borderRadius: '6px', fontWeight: '900', cursor: 'pointer' }}>
-              ✅ सेव करें
+              Save UPI
             </button>
           </div>
         )}
 
         {isEditingGst && (
           <div style={{ marginTop: '10px', background: '#0f172a', padding: '10px', borderRadius: '10px', border: '1px solid #22c55e', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-            <span style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 'bold' }}>🏛️ दुकान का GSTIN या Dummy GST नंबर सेव करें:</span>
+            <span style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 'bold' }}>Store GSTIN Number:</span>
             <input
               type="text"
-              placeholder="उदा: 10ABCDE1234F1Z5"
+              placeholder="e.g. 10ABCDE1234F1Z5"
               value={shopGstNumber}
               onChange={e => setShopGstNumber(e.target.value.toUpperCase())}
               style={{ flex: 1, minWidth: '180px', padding: '7px 10px', borderRadius: '6px', border: '1px solid #475569', background: '#1e293b', color: '#4ade80', fontWeight: 'bold' }}
             />
             <button onClick={saveShopGstNumber} style={{ background: '#16a34a', color: 'white', border: 'none', padding: '7px 14px', borderRadius: '6px', fontWeight: '900', cursor: 'pointer' }}>
-              ✅ GST सेव करें
+              Save GSTIN
             </button>
           </div>
         )}
       </div>
 
-      {/* 🎉 MODAL WHEN BILL IS SAVED */}
+      {/* 🎉 INVOICE SAVED BANNER */}
       {lastGeneratedBill && (
         <div style={{ background: 'linear-gradient(135deg, #064e3b, #0f172a)', border: '2px solid #22c55e', borderRadius: '14px', padding: '14px', marginBottom: '14px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
             <div>
               <span style={{ background: '#4ade80', color: '#064e3b', padding: '2px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '900' }}>
-                ✅ {lastGeneratedBill.isGstBill ? 'GST TAX INVOICE' : 'काउंटर बिल'} डेटाबेस में सेव हो गया (#{lastGeneratedBill.billNo})
+                ✅ {lastGeneratedBill.isGstBill ? 'GST TAX INVOICE SAVED' : 'INVOICE SAVED'} (#{lastGeneratedBill.billNo})
               </span>
               <h3 style={{ margin: '5px 0 0 0', fontSize: '16px', color: 'white' }}>
-                👤 {lastGeneratedBill.custName} — कुल रकम: <span style={{ color: '#4ade80' }}>₹{lastGeneratedBill.grandTotal}</span> ({lastGeneratedBill.paymentMethod})
+                👤 {lastGeneratedBill.custName} — Net Payable: <span style={{ color: '#4ade80' }}>₹{lastGeneratedBill.grandTotal}</span> ({lastGeneratedBill.paymentMethod})
               </h3>
             </div>
             <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-              <button onClick={() => printInvoiceWithQr(lastGeneratedBill, 'thermal', false)} style={{ padding: '8px 12px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '12px', cursor: 'pointer' }}>
-                🖨️ Thermal Print ({lastGeneratedBill.isGstBill ? 'GST' : 'Normal'})
+              <button onClick={() => printInvoiceWithQr(lastGeneratedBill, 'thermal')} style={{ padding: '8px 12px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '12px', cursor: 'pointer' }}>
+                🖨️ Thermal Print
               </button>
-              <button onClick={() => printInvoiceWithQr(lastGeneratedBill, 'a4', false)} style={{ padding: '8px 12px', background: '#7c3aed', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '12px', cursor: 'pointer' }}>
-                📄 A4 Print ({lastGeneratedBill.isGstBill ? 'GST' : 'Normal'})
+              <button onClick={() => printInvoiceWithQr(lastGeneratedBill, 'a4')} style={{ padding: '8px 12px', background: '#7c3aed', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '12px', cursor: 'pointer' }}>
+                📄 A4 Invoice
               </button>
-              <button onClick={() => sendBillOnWhatsApp(lastGeneratedBill, false)} style={{ padding: '8px 12px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '12px', cursor: 'pointer' }}>
-                📲 WhatsApp
+              <button onClick={() => sendBillOnWhatsApp(lastGeneratedBill)} style={{ padding: '8px 12px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '12px', cursor: 'pointer' }}>
+                📲 Share on WhatsApp
               </button>
               <button onClick={() => setLastGeneratedBill(null)} style={{ padding: '8px 10px', background: '#334155', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
                 ✖
@@ -2243,9 +2337,9 @@ export default function CounterBillingTab({
         >
           <div style={{ background: '#1e293b', border: '2px solid #38bdf8', borderRadius: '16px', padding: '18px', width: '100%', maxWidth: '420px', textAlign: 'center', color: 'white' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-              <h3 style={{ margin: 0, fontSize: '16px', color: '#38bdf8' }}>📷 प्रोडक्ट QR / बारकोड स्कैनर</h3>
+              <h3 style={{ margin: 0, fontSize: '16px', color: '#38bdf8' }}>📷 Barcode / QR Scanner</h3>
               <button onClick={stopCameraScanner} style={{ background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', padding: '5px 10px', fontWeight: 'bold', cursor: 'pointer' }}>
-                ✖ बंद करें
+                ✖ Close
               </button>
             </div>
 
@@ -2260,7 +2354,7 @@ export default function CounterBillingTab({
               <input
                 type="text"
                 autoFocus
-                placeholder="कोड, बारकोड या नाम लिखें और Enter दबाएं..."
+                placeholder="Scan or type SKU / Barcode and press Enter..."
                 value={manualScanCode}
                 onChange={e => setManualScanCode(e.target.value)}
                 onKeyDown={e => {
@@ -2291,13 +2385,11 @@ export default function CounterBillingTab({
       )}
 
       {/* ========================================================== */}
-      {/* VIEW 1: TRUE 50-50 SPLIT SCREEN POS (LEFT LIST, RIGHT BILL)*/}
+      {/* VIEW 1: 50-50 SPLIT SCREEN POS TERMINAL                    */}
       {/* ========================================================== */}
       {posSubView === 'pos_screen' && (
         <div className="pos-flex-split-container">
-          {/* ====================================================== */}
-          {/* ⬅️ LEFT 50% PANE: SEARCH + CATEGORY SELECT + SCAN QR  */}
-          {/* ====================================================== */}
+          {/* LEFT 50% PANE: INVENTORY CATALOG */}
           <div
             className="pos-half-pane"
             style={{
@@ -2310,17 +2402,17 @@ export default function CounterBillingTab({
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: '15px', color: '#38bdf8', fontWeight: '900' }}>
-                  🛍️ 1. स्टॉक रूम का सामान ({filteredProducts.length} Items)
+                  📦 Inventory Catalog ({filteredProducts.length} Items)
                 </h3>
                 <span style={{ fontSize: '11px', color: '#cbd5e1' }}>
-                  📦 रियल स्टॉक से सीधा कनेक्टेड • बिकने पर ऑटो-माइनस होगा
+                  Real-time Stock Sync • Auto-deducts on Billing
                 </span>
               </div>
               <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                 <button
                   type="button"
                   onClick={fetchLiveShopStockFromDb}
-                  title="Stock Room से ताज़ा स्टॉक रिफ्रेश करें"
+                  title="Refresh live stock from database"
                   style={{
                     background: '#1e293b',
                     color: '#38bdf8',
@@ -2332,7 +2424,7 @@ export default function CounterBillingTab({
                     cursor: 'pointer'
                   }}
                 >
-                  {isSyncingStock ? '⏳...' : '🔄 Sync Stock'}
+                  {isSyncingStock ? 'Syncing...' : '🔄 Sync Stock'}
                 </button>
                 <button
                   type="button"
@@ -2345,10 +2437,7 @@ export default function CounterBillingTab({
                     borderRadius: '8px',
                     fontSize: '11.5px',
                     fontWeight: '900',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px'
+                    cursor: 'pointer'
                   }}
                 >
                   📷 Scan QR
@@ -2367,25 +2456,25 @@ export default function CounterBillingTab({
                     cursor: 'pointer'
                   }}
                 >
-                  ➕ कस्टम सामान
+                  ➕ Custom Item
                 </button>
               </div>
             </div>
 
             {showCustomItemBox && (
               <div style={{ background: '#1e293b', padding: '10px', borderRadius: '10px', border: '1px solid #f59e0b', marginBottom: '10px' }}>
-                <div style={{ fontSize: '11.5px', color: '#fbbf24', fontWeight: 'bold', marginBottom: '6px' }}>⚡ बिना लिस्ट वाला सामान बिल में डालें:</div>
+                <div style={{ fontSize: '11.5px', color: '#fbbf24', fontWeight: 'bold', marginBottom: '6px' }}>Quick Add Non-Catalog Item:</div>
                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                   <input
                     type="text"
-                    placeholder="सामान का नाम..."
+                    placeholder="Item Name..."
                     value={customItemName}
                     onChange={e => setCustomItemName(e.target.value)}
                     style={{ flex: '2 1 120px', padding: '7px', borderRadius: '6px', border: '1px solid #475569', background: '#0f172a', color: 'white', fontSize: '12px' }}
                   />
                   <input
                     type="number"
-                    placeholder="रेट ₹"
+                    placeholder="Rate ₹"
                     value={customItemPrice}
                     onChange={e => setCustomItemPrice(e.target.value)}
                     style={{ flex: '1 1 70px', width: '70px', padding: '7px', borderRadius: '6px', border: '1px solid #475569', background: '#0f172a', color: 'white', fontSize: '12px' }}
@@ -2402,18 +2491,18 @@ export default function CounterBillingTab({
                     onClick={handleAddCustomItem}
                     style={{ background: '#16a34a', color: 'white', border: 'none', padding: '7px 12px', borderRadius: '6px', fontWeight: '900', cursor: 'pointer', fontSize: '12px' }}
                   >
-                    + जोड़ें
+                    + Add
                   </button>
                 </div>
               </div>
             )}
 
-            {/* 🔍 SEARCH BAR + CATEGORY SELECT DROPDOWN SIDE BY SIDE */}
+            {/* Search & Category */}
             <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
               <div style={{ position: 'relative', flex: '2 1 180px' }}>
                 <input
                   type="text"
-                  placeholder="🔍 सामान खोजें या बारकोड स्कैन कर Enter दबाएं..."
+                  placeholder="🔍 Search item name, SKU, or scan barcode..."
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
                   onKeyDown={e => {
@@ -2466,17 +2555,17 @@ export default function CounterBillingTab({
               >
                 {productCategories.map(cat => (
                   <option key={cat} value={cat} style={{ background: '#0f172a', color: 'white' }}>
-                    {cat === 'All' ? '🌈 सभी कैटेगरी (All)' : `🏷️ ${cat}`}
+                    {cat === 'All' ? 'All Categories' : cat}
                   </option>
                 ))}
               </select>
             </div>
 
-            {/* COMPACT PRODUCT ROWS WITH REAL `total_stock` */}
+            {/* Product List */}
             <div className="pos-compact-product-list">
               {filteredProducts.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '35px 10px', color: '#94a3b8', fontSize: '13px' }}>
-                  📭 स्टॉक रूम में इस कैटेगरी या नाम का कोई प्रोडक्ट नहीं मिला।
+                  No matching items found in inventory.
                 </div>
               ) : (
                 filteredProducts.map((prod: any, idx: number) => {
@@ -2585,14 +2674,12 @@ export default function CounterBillingTab({
                                 color: isOutOfStock ? '#f87171' : isLowStock ? '#fbbf24' : '#4ade80'
                               }}
                             >
-                              {isOutOfStock
-                                ? '🚨 Out of Stock (0)'
-                                : `📦 स्टॉक: ${remainingStock} ${prod.unit || 'Pc'}`}
+                              {isOutOfStock ? 'Out of Stock' : `Stock: ${remainingStock} ${prod.unit || 'Pc'}`}
                             </span>
                             <button
                               type="button"
                               onClick={e => printProductQrSticker(prod, e)}
-                              title="इस सामान का QR कोड स्टीकर प्रिंट करें"
+                              title="Print Product QR Sticker"
                               style={{
                                 background: '#0f172a',
                                 color: '#38bdf8',
@@ -2645,20 +2732,18 @@ export default function CounterBillingTab({
             </div>
           </div>
 
-          {/* ====================================================== */}
-          {/* ➡️ RIGHT 50% PANE: LIVE PAPER BILL RECEIPT PREVIEW     */}
-          {/* ====================================================== */}
+          {/* RIGHT 50% PANE: LIVE INVOICE TERMINAL */}
           <div id="live-bill-receipt-section" className="pos-half-pane">
             <div className="pos-live-receipt-box">
               <div style={{ textAlign: 'center', borderBottom: '2px dashed #94a3b8', paddingBottom: '8px', marginBottom: '10px' }}>
                 {isGstBillEnabled && (
                   <span style={{ background: '#059669', color: 'white', padding: '2px 10px', borderRadius: '10px', fontSize: '10px', fontWeight: '900', display: 'inline-block', marginBottom: '4px' }}>
-                    🏛️ TAX INVOICE (GST)
+                    TAX INVOICE ({gstType === 'inclusive' ? 'INCLUSIVE OF GST' : 'EXCLUSIVE OF GST'})
                   </span>
                 )}
                 <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                   <h2 style={{ margin: 0, fontSize: '18px', color: '#0f172a', fontWeight: '900' }}>
-                    {currentShop?.name || 'YOUR SHOP NAME'}
+                    {currentShop?.name || 'STORE NAME'}
                   </h2>
                   {displayShopGst && (
                     <span style={{ background: '#dcfce7', color: '#166534', border: '1px solid #16a34a', padding: '1px 6px', borderRadius: '4px', fontSize: '10.5px', fontWeight: '900' }}>
@@ -2667,7 +2752,7 @@ export default function CounterBillingTab({
                   )}
                 </div>
                 <div style={{ fontSize: '11px', color: '#475569', fontWeight: 'bold', marginTop: '2px' }}>
-                  📍 {currentShop?.address || ''}, {currentShop?.block || ''} | 📞 {currentShop?.phone || ''}
+                  {currentShop?.address || ''}, {currentShop?.block || ''} | Ph: {currentShop?.phone || ''}
                 </div>
               </div>
 
@@ -2675,20 +2760,20 @@ export default function CounterBillingTab({
               <div style={{ background: '#f1f5f9', padding: '8px', borderRadius: '8px', border: '1px solid #cbd5e1', marginBottom: '10px' }}>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
                   <div style={{ flex: '1 1 130px', minWidth: 0 }}>
-                    <label style={{ fontSize: '10px', fontWeight: '800', color: '#334155', display: 'block', marginBottom: '2px' }}>👤 ग्राहक का नाम:</label>
+                    <label style={{ fontSize: '10px', fontWeight: '800', color: '#334155', display: 'block', marginBottom: '2px' }}>Customer Name:</label>
                     <input
                       type="text"
-                      placeholder="Walk-in Customer..."
+                      placeholder="Walk-in Customer"
                       value={custName}
                       onChange={e => setCustName(e.target.value)}
                       style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #94a3b8', background: '#fff', color: '#0f172a', fontSize: '12px', fontWeight: 'bold', boxSizing: 'border-box' }}
                     />
                   </div>
                   <div style={{ flex: '1 1 130px', minWidth: 0 }}>
-                    <label style={{ fontSize: '10px', fontWeight: '800', color: '#334155', display: 'block', marginBottom: '2px' }}>📲 WhatsApp नंबर:</label>
+                    <label style={{ fontSize: '10px', fontWeight: '800', color: '#334155', display: 'block', marginBottom: '2px' }}>Mobile / WhatsApp:</label>
                     <input
                       type="tel"
-                      placeholder="10-अंकों का नंबर..."
+                      placeholder="10-digit mobile..."
                       maxLength={10}
                       value={custPhone}
                       onChange={e => setCustPhone(e.target.value)}
@@ -2697,10 +2782,10 @@ export default function CounterBillingTab({
                   </div>
                 </div>
                 <div>
-                  <label style={{ fontSize: '10px', fontWeight: '800', color: '#334155', display: 'block', marginBottom: '2px' }}>📍 ग्राहक का पूरा पता (Customer Address - गांव / मोहल्ला / वार्ड):</label>
+                  <label style={{ fontSize: '10px', fontWeight: '800', color: '#334155', display: 'block', marginBottom: '2px' }}>Billing Address:</label>
                   <input
                     type="text"
-                    placeholder="ग्राहक का पता यहाँ लिखें (बिल पर छपेगा)..."
+                    placeholder="Customer address (optional)..."
                     value={custAddress}
                     onChange={e => setCustAddress(e.target.value)}
                     style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #94a3b8', background: '#fff', color: '#0f172a', fontSize: '12px', fontWeight: 'bold', boxSizing: 'border-box' }}
@@ -2708,15 +2793,15 @@ export default function CounterBillingTab({
                 </div>
               </div>
 
-              {/* Live Items Table */}
+              {/* Cart Items Table WITH THUMBNAILS */}
               <div style={{ minHeight: '165px', maxHeight: '245px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '8px', marginBottom: '10px', background: '#fafafa' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', color: '#0f172a' }}>
                   <thead>
                     <tr style={{ background: '#e2e8f0', color: '#1e293b', borderBottom: '2px solid #cbd5e1' }}>
-                      <th style={{ padding: '7px 6px', textAlign: 'left' }}>सामान (Item)</th>
-                      <th style={{ padding: '7px 4px', textAlign: 'center' }}>रेट (₹)</th>
-                      <th style={{ padding: '7px 4px', textAlign: 'center' }}>मात्रा</th>
-                      <th style={{ padding: '7px 6px', textAlign: 'right' }}>कुल (₹)</th>
+                      <th style={{ padding: '7px 6px', textAlign: 'left' }}>Item</th>
+                      <th style={{ padding: '7px 4px', textAlign: 'center' }}>Rate (₹)</th>
+                      <th style={{ padding: '7px 4px', textAlign: 'center' }}>Qty</th>
+                      <th style={{ padding: '7px 6px', textAlign: 'right' }}>Amount</th>
                       <th style={{ padding: '7px 4px' }}></th>
                     </tr>
                   </thead>
@@ -2724,7 +2809,7 @@ export default function CounterBillingTab({
                     {cart.length === 0 ? (
                       <tr>
                         <td colSpan={5} style={{ textAlign: 'center', padding: '45px 10px', color: '#64748b', fontWeight: 'bold' }}>
-                          👈 बाएँ तरफ से सामान चुनें या 📷 Scan QR से स्कैन करें!
+                          Select items from Inventory or Scan QR to start billing.
                         </td>
                       </tr>
                     ) : (
@@ -2752,7 +2837,7 @@ export default function CounterBillingTab({
                               type="number"
                               value={item.price}
                               onChange={e => updateCartPrice(item.id, parseFloat(e.target.value) || 0)}
-                              style={{ width: '52px', padding: '3px', textAlign: 'center', borderRadius: '5px', border: '1px solid #94a3b8', fontWeight: 'bold', color: '#0f172a', fontSize: '11.5px' }}
+                              style={{ width: '54px', padding: '3px', textAlign: 'center', borderRadius: '5px', border: '1px solid #94a3b8', fontWeight: 'bold', color: '#0f172a', fontSize: '11.5px' }}
                             />
                           </td>
                           <td style={{ padding: '6px 4px', textAlign: 'center' }}>
@@ -2798,16 +2883,16 @@ export default function CounterBillingTab({
                 </table>
               </div>
 
-              {/* Bill Totals */}
+              {/* Totals, Charges & GST Settings */}
               <div style={{ background: '#f8fafc', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', marginBottom: '10px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', marginBottom: '6px', color: '#334155' }}>
-                  <span>सामान का कुल (Subtotal - {cart.reduce((s, i) => s + i.qty, 0)} Qty):</span>
+                  <span>Subtotal ({cart.reduce((s, i) => s + i.qty, 0)} Units):</span>
                   <strong>₹{subTotal}</strong>
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', marginBottom: '8px' }}>
                   <div style={{ background: '#fff', padding: '5px 6px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
-                    <label style={{ fontSize: '10px', fontWeight: '800', color: '#dc2626', display: 'block' }}>🏷️ छूट (Discount ₹):</label>
+                    <label style={{ fontSize: '10px', fontWeight: '800', color: '#dc2626', display: 'block' }}>Discount (₹):</label>
                     <input
                       type="number"
                       value={discount}
@@ -2815,9 +2900,8 @@ export default function CounterBillingTab({
                       style={{ width: '100%', padding: '3px', borderRadius: '4px', border: '1px solid #e2e8f0', fontWeight: 'bold', color: '#dc2626', fontSize: '12px', boxSizing: 'border-box' }}
                     />
                   </div>
-
                   <div style={{ background: '#fff', padding: '5px 6px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
-                    <label style={{ fontSize: '10px', fontWeight: '800', color: '#2563eb', display: 'block' }}>👷 लेबर चार्ज (₹):</label>
+                    <label style={{ fontSize: '10px', fontWeight: '800', color: '#2563eb', display: 'block' }}>Labour (₹):</label>
                     <input
                       type="number"
                       value={labourCharge}
@@ -2825,9 +2909,8 @@ export default function CounterBillingTab({
                       style={{ width: '100%', padding: '3px', borderRadius: '4px', border: '1px solid #e2e8f0', fontWeight: 'bold', color: '#1e3a8a', fontSize: '12px', boxSizing: 'border-box' }}
                     />
                   </div>
-
                   <div style={{ background: '#fff', padding: '5px 6px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
-                    <label style={{ fontSize: '10px', fontWeight: '800', color: '#7c3aed', display: 'block' }}>🚚 ट्रांसपोर्ट/भाड़ा (₹):</label>
+                    <label style={{ fontSize: '10px', fontWeight: '800', color: '#7c3aed', display: 'block' }}>Transport (₹):</label>
                     <input
                       type="number"
                       value={transportCharge}
@@ -2837,7 +2920,7 @@ export default function CounterBillingTab({
                   </div>
                 </div>
 
-                {/* ☑️ GST BILL CHECKBOX */}
+                {/* GST TAX INVOICE TOGGLE + INCLUSIVE / EXCLUSIVE SWITCH */}
                 <div style={{ background: isGstBillEnabled ? '#ecfdf5' : '#f1f5f9', border: isGstBillEnabled ? '1.5px solid #10b981' : '1px solid #cbd5e1', borderRadius: '8px', padding: '8px', marginBottom: '8px' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '12px', fontWeight: '900', color: '#0f172a' }}>
                     <input
@@ -2846,13 +2929,51 @@ export default function CounterBillingTab({
                       onChange={e => setIsGstBillEnabled(e.target.checked)}
                       style={{ width: '16px', height: '16px', cursor: 'pointer' }}
                     />
-                    <span>🏛️ GST बिल बनाएं (Print in GST Tax Invoice Format)</span>
+                    <span>🏛️ Generate GST Tax Invoice</span>
                   </label>
 
                   {isGstBillEnabled && (
                     <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px dashed #6ee7b7' }}>
+                      {/* Inclusive vs Exclusive Toggle */}
+                      <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
+                        <button
+                          type="button"
+                          onClick={() => setGstType('inclusive')}
+                          style={{
+                            flex: 1,
+                            padding: '5px',
+                            borderRadius: '6px',
+                            border: gstType === 'inclusive' ? '2px solid #047857' : '1px solid #cbd5e1',
+                            background: gstType === 'inclusive' ? '#059669' : '#fff',
+                            color: gstType === 'inclusive' ? '#fff' : '#0f172a',
+                            fontSize: '11px',
+                            fontWeight: '900',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          ✅ Inclusive of GST (In Price)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setGstType('exclusive')}
+                          style={{
+                            flex: 1,
+                            padding: '5px',
+                            borderRadius: '6px',
+                            border: gstType === 'exclusive' ? '2px solid #1d4ed8' : '1px solid #cbd5e1',
+                            background: gstType === 'exclusive' ? '#2563eb' : '#fff',
+                            color: gstType === 'exclusive' ? '#fff' : '#0f172a',
+                            fontSize: '11px',
+                            fontWeight: '900',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          ➕ Exclusive of GST (+ Extra)
+                        </button>
+                      </div>
+
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
-                        <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#065f46' }}>GST दर चुनें (CGST+SGST):</span>
+                        <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#065f46' }}>GST Slab (CGST + SGST):</span>
                         <div style={{ display: 'flex', gap: '4px' }}>
                           {[5, 12, 18, 28].map(g => (
                             <button
@@ -2878,24 +2999,20 @@ export default function CounterBillingTab({
 
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
                         <div>
-                          <label style={{ fontSize: '10px', fontWeight: 'bold', color: '#065f46', display: 'block' }}>
-                            दुकान GSTIN (या Dummy GST डालें):
-                          </label>
+                          <label style={{ fontSize: '10px', fontWeight: 'bold', color: '#065f46', display: 'block' }}>Store GSTIN:</label>
                           <input
                             type="text"
-                            placeholder="उदा: 10ABCDE1234F1Z5"
+                            placeholder="10ABCDE1234F1Z5"
                             value={shopGstNumber}
                             onChange={e => setShopGstNumber(e.target.value.toUpperCase())}
                             style={{ width: '100%', padding: '5px', borderRadius: '5px', border: '1px solid #10b981', fontSize: '11px', fontWeight: 'bold', boxSizing: 'border-box' }}
                           />
                         </div>
                         <div>
-                          <label style={{ fontSize: '10px', fontWeight: 'bold', color: '#065f46', display: 'block' }}>
-                            ग्राहक GSTIN (Optional):
-                          </label>
+                          <label style={{ fontSize: '10px', fontWeight: 'bold', color: '#065f46', display: 'block' }}>Buyer GSTIN (B2B):</label>
                           <input
                             type="text"
-                            placeholder="Buyer GST (Optional)..."
+                            placeholder="Optional..."
                             value={custGstNumber}
                             onChange={e => setCustGstNumber(e.target.value.toUpperCase())}
                             style={{ width: '100%', padding: '5px', borderRadius: '5px', border: '1px solid #94a3b8', fontSize: '11px', fontWeight: 'bold', boxSizing: 'border-box' }}
@@ -2904,25 +3021,25 @@ export default function CounterBillingTab({
                       </div>
 
                       <div style={{ fontSize: '11px', color: '#047857', fontWeight: 'bold', marginTop: '5px', textAlign: 'right' }}>
-                        CGST ({gstPercent / 2}%): ₹{(gstAmt / 2).toFixed(1)} + SGST ({gstPercent / 2}%): ₹{(gstAmt / 2).toFixed(1)} = कुल GST: +₹{gstAmt}
+                        Taxable: ₹{taxableAmt.toFixed(2)} | CGST ({gstPercent / 2}%): ₹{(gstAmt / 2).toFixed(2)} + SGST ({gstPercent / 2}%): ₹{(gstAmt / 2).toFixed(2)}
                       </div>
                     </div>
                   )}
                 </div>
 
-                {/* GRAND TOTAL LINE */}
+                {/* GRAND TOTAL */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '18px', fontWeight: '900', color: '#15803d', borderTop: '2px dashed #94a3b8', paddingTop: '6px' }}>
-                  <span>कुल देय बिल (GRAND TOTAL):</span>
+                  <span>GRAND TOTAL:</span>
                   <span>₹{grandTotal}</span>
                 </div>
               </div>
 
-              {/* Payment Mode Buttons */}
+              {/* Payment Mode */}
               <div style={{ display: 'flex', gap: '6px', marginBottom: '10px', flexWrap: 'wrap' }}>
                 {[
-                  { id: 'Cash', label: '💵 नकद (Cash)', bg: '#16a34a' },
-                  { id: 'UPI', label: '🏦 Account (UPI)', bg: '#7c3aed' },
-                  { id: 'Khata_Due', label: '📒 उधार (Khata)', bg: '#ea580c' }
+                  { id: 'Cash', label: '💵 Cash', bg: '#16a34a' },
+                  { id: 'UPI', label: '🏦 UPI / Bank', bg: '#7c3aed' },
+                  { id: 'Khata_Due', label: '📒 Credit / Khata', bg: '#ea580c' }
                 ].map(pm => {
                   const active = paymentMethod === pm.id;
                   return (
@@ -2948,35 +3065,35 @@ export default function CounterBillingTab({
                 })}
               </div>
 
-              {/* 🔥 STRICT SHOP OWNER QR DISPLAY: SHOWS ONLY IF SHOP OWNER UPI IS ADDED 🔥 */}
+              {/* Store Payment QR */}
               {grandTotal > 0 && liveBillQr.activeUpi && liveBillQr.qrImg && (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#eff6ff', border: '1px dashed #3b82f6', borderRadius: '8px', padding: '6px 10px', marginBottom: '10px' }}>
                   <div>
-                    <div style={{ fontSize: '11px', fontWeight: '900', color: '#1e3a8a' }}>📱 Shop Owner Payment QR (₹{grandTotal})</div>
+                    <div style={{ fontSize: '11px', fontWeight: '900', color: '#1e3a8a' }}>Store Payment QR (₹{grandTotal})</div>
                     <div style={{ fontSize: '10px', color: '#475569' }}>UPI: <strong>{liveBillQr.activeUpi}</strong></div>
-                    <div style={{ fontSize: '9.5px', color: '#15803d', fontWeight: 'bold' }}>✔ प्रिंट बिल पर भी आपका यही QR छपेगा</div>
+                    <div style={{ fontSize: '9.5px', color: '#15803d', fontWeight: 'bold' }}>✔ Auto-prints on customer invoice</div>
                   </div>
-                  <img src={liveBillQr.qrImg} alt="Shop QR" style={{ width: '60px', height: '60px', borderRadius: '6px', border: '2px solid #fff' }} />
+                  <img src={liveBillQr.qrImg} alt="Store QR" style={{ width: '58px', height: '58px', borderRadius: '6px', border: '2px solid #fff' }} />
                 </div>
               )}
 
-              {/* If UPI is NOT added in Shop Profile, show "UPI ID Not Found" notice when UPI mode is selected */}
+              {/* UPI Not Found Warning Box */}
               {grandTotal > 0 && !liveBillQr.activeUpi && paymentMethod === 'UPI' && (
                 <div style={{ background: '#fef2f2', border: '1px dashed #ef4444', borderRadius: '8px', padding: '7px 10px', marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
                   <span style={{ fontSize: '11px', color: '#dc2626', fontWeight: '900' }}>
-                    ⚠️ UPI ID Not Found (प्रोफाइल में दुकानदार का UPI सेट नहीं है, इसलिए QR नहीं दिखेगा)
+                    ⚠️ Store UPI ID is not configured. Add your UPI ID to display payment QR.
                   </span>
                   <button
                     type="button"
                     onClick={() => setIsEditingUpi(true)}
                     style={{ background: '#dc2626', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '6px', fontSize: '10px', fontWeight: 'bold', cursor: 'pointer' }}
                   >
-                    + अपना UPI जोड़ें
+                    + Add UPI ID
                   </button>
                 </div>
               )}
 
-              {/* Submit Bill Button */}
+              {/* Save Invoice Button */}
               <button
                 disabled={isGeneratingBill || cart.length === 0}
                 onClick={handleGenerateCounterBill}
@@ -2993,26 +3110,24 @@ export default function CounterBillingTab({
                 }}
               >
                 {isGeneratingBill
-                  ? '⏳ बिल डेटाबेस में सेव व स्टॉक माइनस हो रहा है...'
-                  : `✅ ${isGstBillEnabled ? 'GST बिल' : 'बिल'} सेव करें व Print / WhatsApp करें (₹${grandTotal})`}
+                  ? 'Processing Invoice & Updating Stock...'
+                  : `✅ Save & Generate ${isGstBillEnabled ? 'GST Invoice' : 'Bill'} (₹${grandTotal})`}
               </button>
             </div>
           </div>
 
-          {/* Mobile Sticky Bar */}
+          {/* Mobile Sticky Checkout Bar */}
           {cart.length > 0 && (
             <div className="pos-mobile-sticky-bar">
               <div>
-                <div style={{ fontSize: '11.5px', color: '#a5b4fc', fontWeight: 'bold' }}>🛒 बिल में {cart.length} सामान</div>
-                <div style={{ fontSize: '16px', color: '#4ade80', fontWeight: '900' }}>कुल बिल: ₹{grandTotal}</div>
+                <div style={{ fontSize: '11.5px', color: '#a5b4fc', fontWeight: 'bold' }}>🛒 {cart.length} Items in Cart</div>
+                <div style={{ fontSize: '16px', color: '#4ade80', fontWeight: '900' }}>Total: ₹{grandTotal}</div>
               </div>
               <button
-                onClick={() => {
-                  document.getElementById('live-bill-receipt-section')?.scrollIntoView({ behavior: 'smooth' });
-                }}
+                onClick={() => document.getElementById('live-bill-receipt-section')?.scrollIntoView({ behavior: 'smooth' })}
                 style={{ background: '#f59e0b', color: '#0f172a', border: 'none', padding: '9px 14px', borderRadius: '8px', fontWeight: '900', fontSize: '12.5px', cursor: 'pointer' }}
               >
-                🧾 बिल देखें ↓
+                🧾 View Bill ↓
               </button>
             </div>
           )}
@@ -3020,7 +3135,7 @@ export default function CounterBillingTab({
       )}
 
       {/* ========================================================== */}
-      {/* VIEW 2 & 3: STRICTLY SEPARATE COUNTER HISTORY vs ONLINE    */}
+      {/* VIEW 2 & 3: COUNTER SALES & ONLINE ORDERS REGISTERS        */}
       {/* ========================================================== */}
       {(posSubView === 'counter_history' || posSubView === 'online_history') && (
         <div>
@@ -3043,14 +3158,12 @@ export default function CounterBillingTab({
           >
             <div>
               <h3 style={{ margin: 0, fontSize: '17px', color: '#fff', fontWeight: '900' }}>
-                {posSubView === 'counter_history'
-                  ? '🏪 सिर्फ दुकान काउंटर बिक्री का अलग हिसाब (Supabase counter_bills Database)'
-                  : '🌐 सिर्फ ऑनलाइन ऐप आर्डर का अलग हिसाब (Online App Orders Only)'}
+                {posSubView === 'counter_history' ? '🧾 Counter POS Sales Register' : '🌐 Online App Orders Register'}
               </h3>
               <p style={{ margin: '3px 0 0 0', fontSize: '11.5px', color: '#cbd5e1' }}>
                 {posSubView === 'counter_history'
-                  ? 'यहाँ केवल दुकान के काउंटर से काटे गए बिल हैं जो डेटाबेस में परमानेंट सेव हैं।'
-                  : 'यहाँ केवल ऑनलाइन ऐप से आए आर्डर हैं (काउंटर बिल मिक्स नहीं हैं)।'}
+                  ? 'Permanent database ledger of all Counter POS invoices.'
+                  : 'Dedicated ledger of all Online App orders.'}
               </p>
             </div>
 
@@ -3060,40 +3173,40 @@ export default function CounterBillingTab({
                   onClick={fetchCounterBillsFromDb}
                   style={{ background: '#0284c7', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '8px', fontWeight: '900', fontSize: '11.5px', cursor: 'pointer' }}
                 >
-                  {isLoadingBills ? '⏳ लोड हो रहा है...' : '🔄 रिफ्रेश हिस्ट्री'}
+                  {isLoadingBills ? 'Loading...' : '🔄 Refresh'}
                 </button>
               )}
               <button
                 onClick={() => setShowProductSummaryModal(!showProductSummaryModal)}
                 style={{ background: '#f59e0b', color: '#0f172a', border: 'none', padding: '8px 12px', borderRadius: '8px', fontWeight: '900', fontSize: '11.5px', cursor: 'pointer' }}
               >
-                📦 {showProductSummaryModal ? 'बिल लिस्ट देखें' : 'कौन-कौन सा सामान बिका (Product List)'}
+                📦 {showProductSummaryModal ? 'Show Invoices' : 'Item-Wise Summary'}
               </button>
               <button
                 onClick={exportActiveTabToExcel}
                 style={{ background: '#16a34a', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '8px', fontWeight: '900', fontSize: '11.5px', cursor: 'pointer' }}
               >
-                📥 Excel डाउनलोड
+                📥 Export Excel
               </button>
               <button
                 onClick={exportActiveTabToPdf}
                 style={{ background: '#dc2626', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '8px', fontWeight: '900', fontSize: '11.5px', cursor: 'pointer' }}
               >
-                📄 PDF डाउनलोड
+                📄 Export PDF
               </button>
             </div>
           </div>
 
-          {/* Date Filters */}
+          {/* Date & Payment Filters */}
           <div style={{ background: '#0f172a', padding: '12px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '14px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
               <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                 {[
-                  { id: 'today', label: '📅 आज (Today)' },
-                  { id: '7days', label: '📆 1 सप्ताह (7 Days)' },
-                  { id: 'month', label: '🗓️ इस महीने (Month)' },
-                  { id: 'all', label: '♾️ पूरा इतिहास (All)' },
-                  { id: 'custom', label: '🔍 तारीख से तारीख (Date-to-Date)' }
+                  { id: 'today', label: 'Today' },
+                  { id: '7days', label: 'Last 7 Days' },
+                  { id: 'month', label: 'This Month' },
+                  { id: 'all', label: 'All Time' },
+                  { id: 'custom', label: 'Custom Range' }
                 ].map(p => (
                   <button
                     key={p.id}
@@ -3120,14 +3233,14 @@ export default function CounterBillingTab({
                   onChange={e => setPaymentFilter(e.target.value as any)}
                   style={{ padding: '6px 10px', borderRadius: '8px', border: '1px solid #475569', background: '#1e293b', color: 'white', fontSize: '11.5px', fontWeight: 'bold' }}
                 >
-                  <option value="all">💳 सभी पेमेंट (Cash + Account + Khata)</option>
-                  <option value="cash">💵 केवल नकद गल्ला (Cash)</option>
-                  <option value="upi">🏦 केवल दुकानदार Account (UPI)</option>
-                  <option value="khata">📒 केवल उधार (Khata Due)</option>
+                  <option value="all">All Payment Modes</option>
+                  <option value="cash">Cash Only</option>
+                  <option value="upi">Bank / UPI Only</option>
+                  <option value="khata">Credit / Khata Only</option>
                 </select>
                 <input
                   type="text"
-                  placeholder="🔍 बिल नं या ग्राहक खोजें..."
+                  placeholder="Search Invoice or Customer..."
                   value={historySearch}
                   onChange={e => setHistorySearch(e.target.value)}
                   style={{ padding: '6px 10px', borderRadius: '8px', border: '1px solid #475569', background: '#1e293b', color: 'white', fontSize: '11.5px' }}
@@ -3149,48 +3262,46 @@ export default function CounterBillingTab({
             )}
           </div>
 
-          {/* 4 Separate KPI Cards */}
+          {/* 4 KPI Cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '10px', marginBottom: '14px' }}>
             <div style={{ background: '#0f172a', padding: '12px', borderRadius: '12px', borderLeft: '4px solid #38bdf8', border: '1px solid #334155' }}>
-              <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold' }}>
-                {posSubView === 'counter_history' ? '🏪 कुल काउंटर बिक्री' : '🌐 कुल ऑनलाइन बिक्री'}
-              </div>
+              <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold' }}>Total Sales</div>
               <div style={{ fontSize: '22px', fontWeight: '900', color: '#38bdf8', margin: '3px 0' }}>₹{activeMetrics.totalAmt}</div>
-              <div style={{ fontSize: '11px', color: '#cbd5e1' }}>कुल बिल: {activeMetrics.totalCount}</div>
+              <div style={{ fontSize: '11px', color: '#cbd5e1' }}>{activeMetrics.totalCount} Invoices</div>
             </div>
 
             <div style={{ background: '#0f172a', padding: '12px', borderRadius: '12px', borderLeft: '4px solid #22c55e', border: '1px solid #334155' }}>
-              <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold' }}>💵 नकद में बिक्री (Cash in Hand)</div>
+              <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold' }}>Cash Collection</div>
               <div style={{ fontSize: '22px', fontWeight: '900', color: '#4ade80', margin: '3px 0' }}>₹{activeMetrics.cashAmt}</div>
               <div style={{ fontSize: '11px', color: '#cbd5e1' }}>{activeMetrics.cashCount} Cash Bills</div>
             </div>
 
             <div style={{ background: '#0f172a', padding: '12px', borderRadius: '12px', borderLeft: '4px solid #a855f7', border: '1px solid #334155' }}>
-              <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold' }}>🏦 दुकानदार Account में (UPI)</div>
+              <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold' }}>UPI / Bank Transfer</div>
               <div style={{ fontSize: '22px', fontWeight: '900', color: '#c084fc', margin: '3px 0' }}>₹{activeMetrics.upiAmt}</div>
-              <div style={{ fontSize: '11px', color: '#cbd5e1' }}>{activeMetrics.upiCount} Account Bills</div>
+              <div style={{ fontSize: '11px', color: '#cbd5e1' }}>{activeMetrics.upiCount} Digital Bills</div>
             </div>
 
             <div style={{ background: '#0f172a', padding: '12px', borderRadius: '12px', borderLeft: '4px solid #f59e0b', border: '1px solid #334155' }}>
-              <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold' }}>📒 उधार / बकाया खाता (Khata Due)</div>
+              <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold' }}>Credit / Khata Due</div>
               <div style={{ fontSize: '22px', fontWeight: '900', color: '#fbbf24', margin: '3px 0' }}>₹{activeMetrics.khataAmt}</div>
-              <div style={{ fontSize: '11px', color: '#cbd5e1' }}>{activeMetrics.khataCount} Khata Bills</div>
+              <div style={{ fontSize: '11px', color: '#cbd5e1' }}>{activeMetrics.khataCount} Credit Bills</div>
             </div>
           </div>
 
           {showProductSummaryModal ? (
             <div style={{ background: '#0f172a', padding: '14px', borderRadius: '12px', border: '1px solid #334155', overflowX: 'auto' }}>
               <h3 style={{ margin: '0 0 10px 0', color: '#fbbf24', fontSize: '15px' }}>
-                📦 {posSubView === 'counter_history' ? 'काउंटर से बिके सामान की लिस्ट' : 'ऑनलाइन आर्डर से बिके सामान की लिस्ट'} ({activeProductsSoldList.length} Products)
+                Item-Wise Sales Summary ({activeProductsSoldList.length} Products)
               </h3>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
                 <thead>
                   <tr style={{ background: '#1e293b', color: '#38bdf8', textAlign: 'left' }}>
                     <th style={{ padding: '8px' }}>#</th>
-                    <th style={{ padding: '8px' }}>सामान का नाम (Product)</th>
-                    <th style={{ padding: '8px' }}>कैटेगरी</th>
-                    <th style={{ padding: '8px', textAlign: 'center' }}>बिकी मात्रा (Sold Qty)</th>
-                    <th style={{ padding: '8px', textAlign: 'right' }}>कुल रकम (Total ₹)</th>
+                    <th style={{ padding: '8px' }}>Product</th>
+                    <th style={{ padding: '8px' }}>Category</th>
+                    <th style={{ padding: '8px', textAlign: 'center' }}>Qty Sold</th>
+                    <th style={{ padding: '8px', textAlign: 'right' }}>Revenue (₹)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3211,7 +3322,7 @@ export default function CounterBillingTab({
           ) : (
             <div style={{ background: '#0f172a', padding: '14px', borderRadius: '12px', border: '1px solid #334155' }}>
               {filteredActiveRecords.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '30px', color: '#64748b' }}>इस तारीख में कोई रिकॉर्ड नहीं मिला।</div>
+                <div style={{ textAlign: 'center', padding: '30px', color: '#64748b' }}>No records found for the selected filter.</div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {filteredActiveRecords.map((sale: any) => {
@@ -3249,7 +3360,7 @@ export default function CounterBillingTab({
                             </span>
                             {d.isGstVal && (
                               <span style={{ background: '#065f46', color: '#4ade80', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>
-                                🏛️ GST BILL
+                                GST INVOICE
                               </span>
                             )}
                             <span
@@ -3262,30 +3373,30 @@ export default function CounterBillingTab({
                                 fontWeight: 'bold'
                               }}
                             >
-                              {bucket === 'upi' ? '🏦 Shop Account (UPI)' : bucket === 'cash' ? '💵 Cash Galla' : '📒 Khata Due'}
+                              {bucket === 'upi' ? 'Bank / UPI' : bucket === 'cash' ? 'Cash' : 'Credit / Khata'}
                             </span>
                           </div>
 
                           <div style={{ fontSize: '12.5px', color: '#e2e8f0', marginTop: '3px', fontWeight: 'bold' }}>
-                            👤 {sale.customer_name || sale.custName || 'Walk-in'} {sale.customer_phone || sale.phone || sale.custPhone ? `(${sale.customer_phone || sale.phone || sale.custPhone})` : ''}
-                            {d.addrVal ? <span style={{ color: '#94a3b8', fontWeight: 'normal' }}> | 📍 {d.addrVal}</span> : null}
+                            {sale.customer_name || sale.custName || 'Walk-in'} {sale.customer_phone || sale.phone || sale.custPhone ? `(${sale.customer_phone || sale.phone || sale.custPhone})` : ''}
+                            {d.addrVal ? <span style={{ color: '#94a3b8', fontWeight: 'normal' }}> | {d.addrVal}</span> : null}
                           </div>
 
                           {Array.isArray(rawItems) && rawItems.length > 0 && (
                             <div style={{ fontSize: '11px', color: '#38bdf8', marginTop: '2px', fontWeight: 'bold' }}>
-                              📦 सामान: {rawItems.map((it: any) => `${it.name || it.product_name} (${it.qty || it.quantity} ${it.unit || ''})`).join(', ')}
+                              Items: {rawItems.map((it: any) => `${it.name || it.product_name} (${it.qty || it.quantity} ${it.unit || ''})`).join(', ')}
                             </div>
                           )}
 
                           {(d.labourVal > 0 || d.transportVal > 0) && (
                             <div style={{ fontSize: '10.5px', color: '#fbbf24', marginTop: '2px' }}>
-                              {d.labourVal > 0 ? `👷 लेबर: ₹${d.labourVal} ` : ''}
-                              {d.transportVal > 0 ? `| 🚚 भाड़ा: ₹${d.transportVal}` : ''}
+                              {d.labourVal > 0 ? `Labour: ₹${d.labourVal} ` : ''}
+                              {d.transportVal > 0 ? `| Transport: ₹${d.transportVal}` : ''}
                             </div>
                           )}
 
                           <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '2px' }}>
-                            🕒 {new Date(sale.created_at || Date.now()).toLocaleString('en-IN')}
+                            {new Date(sale.created_at || Date.now()).toLocaleString('en-IN')}
                           </div>
                         </div>
 
@@ -3294,19 +3405,19 @@ export default function CounterBillingTab({
                             ₹{d.totalVal}
                           </span>
                           <button
-                            onClick={() => printInvoiceWithQr(sale, 'thermal', isOnline)}
+                            onClick={() => printInvoiceWithQr(sale, 'thermal')}
                             style={{ background: '#2563eb', color: 'white', border: 'none', padding: '7px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '900', cursor: 'pointer' }}
                           >
-                            🖨️ Thermal ({d.isGstVal ? 'GST' : 'Bill'})
+                            🖨️ Thermal
                           </button>
                           <button
-                            onClick={() => printInvoiceWithQr(sale, 'a4', isOnline)}
+                            onClick={() => printInvoiceWithQr(sale, 'a4')}
                             style={{ background: '#7c3aed', color: 'white', border: 'none', padding: '7px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '900', cursor: 'pointer' }}
                           >
                             📄 A4
                           </button>
                           <button
-                            onClick={() => sendBillOnWhatsApp(sale, isOnline)}
+                            onClick={() => sendBillOnWhatsApp(sale)}
                             style={{ background: '#16a34a', color: 'white', border: 'none', padding: '7px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '900', cursor: 'pointer' }}
                           >
                             📲 WhatsApp
@@ -3320,6 +3431,19 @@ export default function CounterBillingTab({
             </div>
           )}
         </div>
+      )}
+
+      {/* ========================================================== */}
+      {/* VIEW 4: GST RETURN FILING CENTER (MONTHLY & QUARTERLY)     */}
+      {/* ========================================================== */}
+      {posSubView === 'gst_return' && (
+        <GstReturnTab
+          currentShop={currentShop}
+          shopGstNumber={shopGstNumber}
+          counterBills={allCounterSalesOnly}
+          onlineOrders={allOnlineSalesOnly}
+          extractBillDetails={extractBillDetails}
+        />
       )}
     </div>
   );
