@@ -3,6 +3,8 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import GstReturnTab from './GstReturnTab';
 
+const UNIT_OPTIONS = ['Pc', 'Kg', 'Gm', 'Pkt', 'Box', 'Ft', 'Mtr', 'Set', 'Ltr', 'Bag'];
+
 export default function CounterBillingTab({
   currentShop,
   setCurrentShop,
@@ -105,12 +107,16 @@ export default function CounterBillingTab({
   const [isGeneratingBill, setIsGeneratingBill] = useState(false);
   const [lastGeneratedBill, setLastGeneratedBill] = useState<any | null>(null);
 
+  // ✏️ Old Bill Edit & 📱 Mobile Bill Preview States
+  const [editingBill, setEditingBill] = useState<any | null>(null);
+  const [mobilePreviewBill, setMobilePreviewBill] = useState<any | null>(null);
+
   // Quick Custom Item State
   const [showCustomItemBox, setShowCustomItemBox] = useState(false);
   const [customItemName, setCustomItemName] = useState('');
   const [customItemPrice, setCustomItemPrice] = useState('');
   const [customItemQty, setCustomItemQty] = useState('1');
-  const [customItemUnit, setCustomItemUnit] = useState('Pcs');
+  const [customItemUnit, setCustomItemUnit] = useState('Pc');
 
   // Shop Owner UPI ID for Bill QR Code
   const [shopUpiId, setShopUpiId] = useState('');
@@ -136,6 +142,12 @@ export default function CounterBillingTab({
   const [filterBlock, setFilterBlock] = useState(currentShop?.block || '');
   const [filterPincode, setFilterPincode] = useState(currentShop?.pincode || '');
   const [selectedOrderForAssign, setSelectedOrderForAssign] = useState<string>('');
+
+  // Helper to detect Mobile / Android WebView
+  const checkIsMobileDevice = () => {
+    if (typeof window === 'undefined') return false;
+    return /Android|iPhone|iPad|iPod|wv|Capacitor/i.test(navigator.userAgent) || window.innerWidth <= 900;
+  };
 
   // Helper to extract Shop Owner's own UPI from profile object
   const extractProfileShopUpi = (shopObj: any): string => {
@@ -248,7 +260,6 @@ export default function CounterBillingTab({
         if (savedLocal) setLocalCounterBills(JSON.parse(savedLocal));
       } catch {}
 
-      // REAL-TIME SUPABASE SUBSCRIPTION FOR STOCK & COUNTER BILLS
       const posChannel = supabase
         .channel(`pos_live_channel_${currentShop.id}`)
         .on(
@@ -648,7 +659,7 @@ export default function CounterBillingTab({
     const base = getBaseProductStock(p);
     const inCartItem = cart.find(c => String(c.id) === String(p.id));
     const cartQty = inCartItem ? Number(inCartItem.qty) : 0;
-    return Math.max(0, base - cartQty);
+    return Math.max(0, Number((base - cartQty).toFixed(2)));
   };
 
   const myShopInStockProducts = useMemo(() => {
@@ -693,8 +704,8 @@ export default function CounterBillingTab({
     }
 
     const existing = cart.find(item => String(item.id) === String(product.id));
-    if (existing && existing.qty + 1 > baseStock) {
-      return alert(`Only ${baseStock} ${product.unit || 'Pc'} available in stock.`);
+    if (existing && existing.qty + 1 > (existing.maxStock || baseStock)) {
+      return alert(`Only ${existing.maxStock || baseStock} ${product.unit || 'Pc'} available in stock.`);
     }
 
     playBeepSound();
@@ -702,7 +713,7 @@ export default function CounterBillingTab({
       const found = prev.find(item => String(item.id) === String(product.id));
       if (found) {
         return prev.map(item =>
-          String(item.id) === String(product.id) ? { ...item, qty: item.qty + 1, maxStock: baseStock } : item
+          String(item.id) === String(product.id) ? { ...item, qty: Number((item.qty + 1).toFixed(2)) } : item
         );
       }
       const price = Number(product.price || product.selling_price || product.rate || 0);
@@ -844,6 +855,15 @@ export default function CounterBillingTab({
     const qrPayload = `PROD:${prod.code || prod.id}`;
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(qrPayload)}`;
 
+    if (checkIsMobileDevice()) {
+      const a = document.createElement('a');
+      a.href = qrUrl;
+      a.download = `QR_${pName.replace(/\s+/g, '_')}.png`;
+      a.target = '_blank';
+      a.click();
+      return;
+    }
+
     const win = window.open('', '_blank', 'width=360,height=420');
     if (!win) return;
     win.document.write(`
@@ -868,7 +888,7 @@ export default function CounterBillingTab({
       return alert('Please enter item name and rate.');
     }
     const price = Math.max(0, parseFloat(customItemPrice) || 0);
-    const qty = Math.max(1, parseFloat(customItemQty) || 1);
+    const qty = Math.max(0.01, parseFloat(customItemQty) || 1);
     setCart(prev => [
       ...prev,
       {
@@ -877,9 +897,9 @@ export default function CounterBillingTab({
         category: 'Custom Item',
         image: '',
         price,
-        unit: customItemUnit || 'Pcs',
+        unit: customItemUnit || 'Pc',
         qty,
-        maxStock: 1000,
+        maxStock: 10000,
         isCustom: true
       }
     ]);
@@ -890,6 +910,7 @@ export default function CounterBillingTab({
   };
 
   const updateCartQty = (id: any, newQty: number) => {
+    if (isNaN(newQty)) return;
     if (newQty <= 0) {
       setCart(prev => prev.filter(item => item.id !== id));
       return;
@@ -898,18 +919,21 @@ export default function CounterBillingTab({
       prev.map(item => {
         if (item.id === id) {
           if (!item.isCustom) {
-            const liveProd = combinedShopProducts.find((p: any) => String(p.id) === String(item.id));
-            const currentMax = liveProd ? getBaseProductStock(liveProd) : item.maxStock;
+            const currentMax = item.maxStock || 10000;
             if (newQty > currentMax) {
               alert(`Only ${currentMax} ${item.unit || 'Pc'} available in inventory.`);
-              return { ...item, maxStock: currentMax };
+              return item;
             }
           }
-          return { ...item, qty: newQty };
+          return { ...item, qty: Number(newQty.toFixed(3)) };
         }
         return item;
       })
     );
+  };
+
+  const updateCartUnit = (id: any, newUnit: string) => {
+    setCart(prev => prev.map(item => (item.id === id ? { ...item, unit: newUnit } : item)));
   };
 
   const updateCartPrice = (id: any, newPrice: number) => {
@@ -917,7 +941,7 @@ export default function CounterBillingTab({
   };
 
   // 🔥 PROFESSIONAL GST INCLUSIVE & EXCLUSIVE CALCULATION 🔥
-  const subTotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
+  const subTotal = Number(cart.reduce((sum, item) => sum + item.price * item.qty, 0).toFixed(2));
   const discountAmt = Math.min(subTotal, Math.max(0, parseFloat(discount) || 0));
   const labourAmt = Math.max(0, parseFloat(labourCharge) || 0);
   const transportAmt = Math.max(0, parseFloat(transportCharge) || 0);
@@ -963,8 +987,105 @@ export default function CounterBillingTab({
     return { activeUpi: rawUpi, upiUri, qrImg };
   };
 
+  const extractBillDetails = (bill: any) => {
+    const meta = Array.isArray(bill.messages)
+      ? bill.messages.find((m: any) => m?.type === 'counter_bill') || {}
+      : {};
+    const subTotalVal = Number(bill.subTotal ?? bill.subtotal ?? meta.subtotal ?? bill.total_amount ?? bill.grand_total ?? 0);
+    const discountVal = Number(bill.discountAmt ?? bill.discount ?? meta.discount ?? 0);
+    const labourVal = Number(bill.labourCharge ?? bill.labour_charge ?? meta.labourCharge ?? 0);
+    const transportVal = Number(bill.transportCharge ?? bill.transport_charge ?? meta.transportCharge ?? bill.delivery_charge ?? 0);
+    const isGstVal = Boolean(bill.isGstBill ?? bill.is_gst_bill ?? meta.isGstBill ?? (Number(bill.gstAmt ?? bill.gst_amount ?? meta.gstAmt ?? 0) > 0));
+    const gstRateVal = Number(bill.gstPercent ?? bill.gst_percent ?? meta.gstPercent ?? (isGstVal ? 18 : 0));
+    const gstAmtVal = Number(bill.gstAmt ?? bill.gst_amount ?? meta.gstAmt ?? 0);
+    const totalVal = Number(bill.grandTotal ?? bill.grand_total ?? bill.total_amount ?? 0);
+    const taxableVal = Number(
+      bill.taxableAmt ?? meta.taxableAmt ?? Math.max(0, totalVal - labourVal - transportVal - gstAmtVal)
+    );
+    const shopGstVal = String(
+      bill.shopGstNo || bill.shop_gst_no || meta.shopGstNo || shopGstNumber || currentShop?.gst_no || ''
+    ).trim();
+    const custGstVal = String(bill.custGstNo || bill.customer_gst_no || meta.custGstNo || '').trim();
+    const addrVal = String(bill.custAddress || bill.customer_address || bill.address || meta.custAddress || '').trim();
+    const billShopUpiVal = String(bill.shopUpiId || bill.shop_upi_id || meta.shopUpiId || '').trim();
+
+    return {
+      subTotalVal,
+      discountVal,
+      labourVal,
+      transportVal,
+      isGstVal,
+      gstRateVal,
+      gstAmtVal,
+      taxableVal,
+      shopGstVal,
+      custGstVal,
+      addrVal,
+      totalVal,
+      billShopUpiVal
+    };
+  };
+
   // ==========================================================
-  // 🧾 SAVE COUNTER BILL IN `counter_bills` + `orders` & DEDUCT `total_stock`
+  // ✏️ LOAD OLD BILL INTO POS FOR EDITING
+  // ==========================================================
+  const handleStartEditBill = (bill: any) => {
+    const d = extractBillDetails(bill);
+    let rawItems = bill.cartItems || bill.items || [];
+    if (typeof rawItems === 'string') {
+      try { rawItems = JSON.parse(rawItems); } catch { rawItems = []; }
+    }
+
+    const mappedCart = (Array.isArray(rawItems) ? rawItems : []).map((it: any) => {
+      const liveProd = combinedShopProducts.find((p: any) => String(p.id) === String(it.id));
+      const baseStock = liveProd ? getBaseProductStock(liveProd) : 10000;
+      const qtyNum = Number(it.qty ?? it.quantity ?? 1);
+      return {
+        id: it.id || `custom_${Date.now()}_${Math.random()}`,
+        name: it.name || it.product_name || 'Item',
+        category: it.category || 'General',
+        image: it.image || (liveProd ? getProductImageUrl(liveProd) : ''),
+        price: Number(it.price || 0),
+        unit: it.unit || 'Pc',
+        qty: qtyNum,
+        maxStock: baseStock + qtyNum,
+        isCustom: !liveProd
+      };
+    });
+
+    setEditingBill(bill);
+    setCart(mappedCart);
+    setCustName(bill.customer_name || bill.custName || '');
+    setCustPhone(bill.customer_phone || bill.phone || bill.custPhone || '');
+    setCustAddress(d.addrVal || '');
+    setDiscount(String(d.discountVal || 0));
+    setLabourCharge(String(d.labourVal || 0));
+    setTransportCharge(String(d.transportVal || 0));
+    setIsGstBillEnabled(Boolean(d.isGstVal));
+    if (d.gstRateVal) setGstPercent(d.gstRateVal);
+    setCustGstNumber(d.custGstVal || '');
+
+    const bucket = getPayBucket(bill);
+    setPaymentMethod(bucket === 'upi' ? 'UPI' : bucket === 'khata' ? 'Khata_Due' : 'Cash');
+
+    setPosSubView('pos_screen');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleCancelEditBill = () => {
+    setEditingBill(null);
+    setCart([]);
+    setCustName('');
+    setCustPhone('');
+    setCustAddress('');
+    setCustGstNumber('');
+    setDiscount('0');
+    setLabourCharge('0');
+    setTransportCharge('0');
+  };
+
+  // ==========================================================
+  // 🧾 SAVE OR UPDATE COUNTER BILL IN `counter_bills` + `orders`
   // ==========================================================
   const handleGenerateCounterBill = async () => {
     if (cart.length === 0) return alert('Please add at least one item to generate an invoice.');
@@ -981,10 +1102,40 @@ export default function CounterBillingTab({
 
     setIsGeneratingBill(true);
     try {
-      const nowIso = new Date().toISOString();
-      const billNo = `POS-${Date.now().toString().slice(-6)}`;
+      const isEditing = Boolean(editingBill);
+      const nowIso = isEditing && editingBill.created_at ? editingBill.created_at : new Date().toISOString();
+      const billNo = isEditing
+        ? String(editingBill.bill_no || editingBill.billNo || editingBill.order_no)
+        : `POS-${Date.now().toString().slice(-6)}`;
 
       const newOverrides: Record<string, number> = { ...localStockOverrides };
+
+      // 0. IF EDITING OLD BILL, RESTORE PREVIOUS STOCK FIRST
+      if (isEditing) {
+        let oldItems = editingBill.cartItems || editingBill.items || [];
+        if (typeof oldItems === 'string') {
+          try { oldItems = JSON.parse(oldItems); } catch { oldItems = []; }
+        }
+        for (const oldIt of Array.isArray(oldItems) ? oldItems : []) {
+          if (oldIt.id && !String(oldIt.id).startsWith('custom_')) {
+            const { data: fp } = await supabase
+              .from('products')
+              .select('id, total_stock, sold_quantity')
+              .eq('id', oldIt.id)
+              .maybeSingle();
+            if (fp) {
+              const oldQty = Number(oldIt.qty ?? oldIt.quantity ?? 0);
+              await supabase
+                .from('products')
+                .update({
+                  total_stock: Number(fp.total_stock || 0) + oldQty,
+                  sold_quantity: Math.max(0, Number(fp.sold_quantity || 0) - oldQty)
+                })
+                .eq('id', oldIt.id);
+            }
+          }
+        }
+      }
 
       // 1. DEDUCT `total_stock` AND INCREMENT `sold_quantity` IN SUPABASE
       for (const item of cart) {
@@ -1007,8 +1158,8 @@ export default function CounterBillingTab({
               : Number(fallbackProd?.sold_quantity || 0);
 
           const soldQtyNow = Number(item.qty);
-          const newTotalStock = Math.max(0, currentAvail - soldQtyNow);
-          const newSoldQuantity = currentSold + soldQtyNow;
+          const newTotalStock = Math.max(0, Number((currentAvail - soldQtyNow).toFixed(3)));
+          const newSoldQuantity = Number((currentSold + soldQtyNow).toFixed(3));
 
           newOverrides[String(item.id)] = newTotalStock;
 
@@ -1052,10 +1203,10 @@ export default function CounterBillingTab({
         qty: c.qty,
         unit: c.unit,
         price: c.price,
-        total: c.price * c.qty
+        total: Number((c.price * c.qty).toFixed(2))
       }));
 
-      // 2. SAVE PERMANENTLY IN DEDICATED `counter_bills` TABLE
+      // 2. SAVE OR UPDATE IN DEDICATED `counter_bills` TABLE
       const counterBillPayload = {
         bill_no: billNo,
         shop_id: String(currentShop.id),
@@ -1081,13 +1232,26 @@ export default function CounterBillingTab({
         created_at: nowIso
       };
 
-      const { data: savedCounterRow } = await supabase
-        .from('counter_bills')
-        .insert(counterBillPayload)
-        .select()
-        .maybeSingle();
+      let savedCounterRow: any = null;
+      if (isEditing) {
+        const { data } = await supabase
+          .from('counter_bills')
+          .update(counterBillPayload)
+          .eq('bill_no', billNo)
+          .eq('shop_id', String(currentShop.id))
+          .select()
+          .maybeSingle();
+        savedCounterRow = data;
+      } else {
+        const { data } = await supabase
+          .from('counter_bills')
+          .insert(counterBillPayload)
+          .select()
+          .maybeSingle();
+        savedCounterRow = data;
+      }
 
-      // 3. ALSO INSERT INTO `orders` SO SALES LEDGER RECEIVES IT
+      // 3. ALSO INSERT OR UPDATE `orders` SO SALES LEDGER RECEIVES IT
       const billMetaMsg = {
         sender: 'shop_owner',
         type: 'counter_bill',
@@ -1133,31 +1297,42 @@ export default function CounterBillingTab({
       };
 
       let savedOrder: any = null;
-      const { data: dbOrder, error } = await supabase.from('orders').insert(orderPayload).select().single();
-
-      if (error) {
-        const minimalPayload = {
-          shop_id: currentShop.id,
-          shop_name: currentShop.name,
-          customer_name: finalCustName,
-          phone: finalCustPhone,
-          address: finalCustAddress,
-          items: structuredItems,
-          total_amount: grandTotal,
-          payment_mode: `Counter POS - ${paymentMethod}`,
-          status: 'completed',
-          created_at: nowIso
-        };
-        const { data: retryOrder } = await supabase.from('orders').insert(minimalPayload).select().single();
-        savedOrder = retryOrder;
+      if (isEditing) {
+        const { data: updatedOrd } = await supabase
+          .from('orders')
+          .update(orderPayload)
+          .eq('order_no', billNo)
+          .eq('shop_id', currentShop.id)
+          .select()
+          .maybeSingle();
+        savedOrder = updatedOrd;
       } else {
-        savedOrder = dbOrder;
+        const { data: dbOrder, error } = await supabase.from('orders').insert(orderPayload).select().single();
+        if (error) {
+          const minimalPayload = {
+            shop_id: currentShop.id,
+            shop_name: currentShop.name,
+            customer_name: finalCustName,
+            phone: finalCustPhone,
+            address: finalCustAddress,
+            items: structuredItems,
+            total_amount: grandTotal,
+            payment_mode: `Counter POS - ${paymentMethod}`,
+            status: 'completed',
+            created_at: nowIso
+          };
+          const { data: retryOrder } = await supabase.from('orders').insert(minimalPayload).select().single();
+          savedOrder = retryOrder;
+        } else {
+          savedOrder = dbOrder;
+        }
       }
 
       const completeBillRecord = {
         ...(savedCounterRow || savedOrder || { id: `local_${Date.now()}`, ...orderPayload }),
         order_no: billNo,
         billNo,
+        bill_no: billNo,
         subTotal,
         discountAmt,
         labourCharge: labourAmt,
@@ -1186,16 +1361,27 @@ export default function CounterBillingTab({
         created_at: nowIso
       };
 
-      setDbCounterBills(prev => [completeBillRecord, ...prev]);
-
-      if (setOrders) {
-        setOrders((prev: any[]) => [completeBillRecord, ...(prev || [])]);
+      if (isEditing) {
+        setDbCounterBills(prev => prev.map(b => (String(b.bill_no || b.billNo || b.order_no) === billNo ? completeBillRecord : b)));
+        if (setOrders) {
+          setOrders((prev: any[]) => (prev || []).map(o => (String(o.order_no || o.billNo) === billNo ? completeBillRecord : o)));
+        }
+        const updatedLocal = localCounterBills.map(b => (String(b.bill_no || b.billNo || b.order_no) === billNo ? completeBillRecord : b));
+        setLocalCounterBills(updatedLocal);
+        try {
+          localStorage.setItem(`fixifiy_counter_bills_${currentShop.id}`, JSON.stringify(updatedLocal.slice(0, 500)));
+        } catch {}
+      } else {
+        setDbCounterBills(prev => [completeBillRecord, ...prev]);
+        if (setOrders) {
+          setOrders((prev: any[]) => [completeBillRecord, ...(prev || [])]);
+        }
+        const updatedLocal = [completeBillRecord, ...localCounterBills];
+        setLocalCounterBills(updatedLocal);
+        try {
+          localStorage.setItem(`fixifiy_counter_bills_${currentShop.id}`, JSON.stringify(updatedLocal.slice(0, 500)));
+        } catch {}
       }
-      const updatedLocal = [completeBillRecord, ...localCounterBills];
-      setLocalCounterBills(updatedLocal);
-      try {
-        localStorage.setItem(`fixifiy_counter_bills_${currentShop.id}`, JSON.stringify(updatedLocal.slice(0, 500)));
-      } catch {}
 
       await fetchLiveShopStockFromDb();
       await fetchCounterBillsFromDb();
@@ -1203,6 +1389,7 @@ export default function CounterBillingTab({
       if (typeof fetchOrders === 'function') fetchOrders(currentShop.id, true);
 
       setLastGeneratedBill(completeBillRecord);
+      setEditingBill(null);
 
       setCart([]);
       setCustName('');
@@ -1217,45 +1404,6 @@ export default function CounterBillingTab({
     } finally {
       setIsGeneratingBill(false);
     }
-  };
-
-  const extractBillDetails = (bill: any) => {
-    const meta = Array.isArray(bill.messages)
-      ? bill.messages.find((m: any) => m?.type === 'counter_bill') || {}
-      : {};
-    const subTotalVal = Number(bill.subTotal ?? bill.subtotal ?? meta.subtotal ?? bill.total_amount ?? bill.grand_total ?? 0);
-    const discountVal = Number(bill.discountAmt ?? bill.discount ?? meta.discount ?? 0);
-    const labourVal = Number(bill.labourCharge ?? bill.labour_charge ?? meta.labourCharge ?? 0);
-    const transportVal = Number(bill.transportCharge ?? bill.transport_charge ?? meta.transportCharge ?? bill.delivery_charge ?? 0);
-    const isGstVal = Boolean(bill.isGstBill ?? bill.is_gst_bill ?? meta.isGstBill ?? (Number(bill.gstAmt ?? bill.gst_amount ?? meta.gstAmt ?? 0) > 0));
-    const gstRateVal = Number(bill.gstPercent ?? bill.gst_percent ?? meta.gstPercent ?? (isGstVal ? 18 : 0));
-    const gstAmtVal = Number(bill.gstAmt ?? bill.gst_amount ?? meta.gstAmt ?? 0);
-    const totalVal = Number(bill.grandTotal ?? bill.grand_total ?? bill.total_amount ?? 0);
-    const taxableVal = Number(
-      bill.taxableAmt ?? meta.taxableAmt ?? Math.max(0, totalVal - labourVal - transportVal - gstAmtVal)
-    );
-    const shopGstVal = String(
-      bill.shopGstNo || bill.shop_gst_no || meta.shopGstNo || shopGstNumber || currentShop?.gst_no || ''
-    ).trim();
-    const custGstVal = String(bill.custGstNo || bill.customer_gst_no || meta.custGstNo || '').trim();
-    const addrVal = String(bill.custAddress || bill.customer_address || bill.address || meta.custAddress || '').trim();
-    const billShopUpiVal = String(bill.shopUpiId || bill.shop_upi_id || meta.shopUpiId || '').trim();
-
-    return {
-      subTotalVal,
-      discountVal,
-      labourVal,
-      transportVal,
-      isGstVal,
-      gstRateVal,
-      gstAmtVal,
-      taxableVal,
-      shopGstVal,
-      custGstVal,
-      addrVal,
-      totalVal,
-      billShopUpiVal
-    };
   };
 
   // ==========================================================
@@ -1417,12 +1565,12 @@ export default function CounterBillingTab({
         const prev = map.get(key) || {
           name,
           category: String(it.category || 'General'),
-          unit: String(it.unit || 'Pcs'),
+          unit: String(it.unit || 'Pc'),
           qty: 0,
           revenue: 0
         };
-        prev.qty += qty;
-        prev.revenue += total;
+        prev.qty = Number((prev.qty + qty).toFixed(3));
+        prev.revenue = Number((prev.revenue + total).toFixed(2));
         map.set(key, prev);
       });
     });
@@ -1430,7 +1578,260 @@ export default function CounterBillingTab({
   }, [filteredActiveRecords]);
 
   // ==========================================
-  // 📲 WHATSAPP & 🖨️ PRINT INVOICE
+  // 📄 ZERO-DEPENDENCY CANVAS TO REAL PDF GENERATOR
+  // ==========================================
+  const createPdfBlobFromCanvas = (canvas: HTMLCanvasElement): Blob => {
+    const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.94);
+    const base64 = jpegDataUrl.split(',')[1];
+    const binaryStr = atob(base64);
+    const jpegBytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      jpegBytes[i] = binaryStr.charCodeAt(i);
+    }
+
+    const imgW = canvas.width;
+    const imgH = canvas.height;
+    const pdfW = 420;
+    const pdfH = Math.round((imgH / imgW) * pdfW);
+
+    const enc = new TextEncoder();
+    const chunks: Uint8Array[] = [];
+    const offsets: number[] = [];
+    let currentOffset = 0;
+
+    const pushStr = (s: string) => {
+      const b = enc.encode(s);
+      chunks.push(b);
+      currentOffset += b.length;
+    };
+    const pushBytes = (b: Uint8Array) => {
+      chunks.push(b);
+      currentOffset += b.length;
+    };
+
+    pushStr('%PDF-1.4\n%\xFF\xFF\xFF\xFF\n');
+
+    // 1: Catalog
+    offsets.push(currentOffset);
+    pushStr('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+
+    // 2: Pages
+    offsets.push(currentOffset);
+    pushStr('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+
+    // 3: Page
+    offsets.push(currentOffset);
+    pushStr(
+      `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfW} ${pdfH}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n`
+    );
+
+    // 4: Image XObject
+    offsets.push(currentOffset);
+    pushStr(
+      `4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${imgW} /Height ${imgH} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`
+    );
+    pushBytes(jpegBytes);
+    pushStr('\nendstream\nendobj\n');
+
+    // 5: Content stream
+    const contentStream = `q\n${pdfW} 0 0 ${pdfH} 0 0 cm\n/Im0 Do\nQ\n`;
+    offsets.push(currentOffset);
+    pushStr(`5 0 obj\n<< /Length ${contentStream.length} >>\nstream\n${contentStream}endstream\nendobj\n`);
+
+    // xref
+    const xrefOffset = currentOffset;
+    pushStr(`xref\n0 ${offsets.length + 1}\n0000000000 65535 f \n`);
+    for (const off of offsets) {
+      pushStr(String(off).padStart(10, '0') + ' 00000 n \n');
+    }
+
+    pushStr(`trailer\n<< /Size ${offsets.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
+
+    return new Blob(chunks as BlobPart[], { type: 'application/pdf' });
+  };
+
+  // ==========================================
+  // 📄 DOWNLOAD BILL AS REAL PDF OR SHARE PDF ON WHATSAPP
+  // ==========================================
+  const downloadOrShareBillPdf = async (bill: any, shareOnWhatsApp = false) => {
+    try {
+      let rawItems = bill.cartItems || bill.items || [];
+      if (typeof rawItems === 'string') {
+        try { rawItems = JSON.parse(rawItems); } catch { rawItems = []; }
+      }
+      const d = extractBillDetails(bill);
+      const bNo = bill.bill_no || bill.billNo || bill.order_no || bill.id;
+      const { activeUpi } = getShopOwnerQrData(d.totalVal, String(bNo), d.billShopUpiVal);
+
+      const scale = 2; // High-res crisp PDF
+      const width = 440;
+      const rowHeight = 28;
+      const height = 380 + rawItems.length * rowHeight + (d.isGstVal ? 85 : 0) + (activeUpi ? 40 : 0);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width * scale;
+      canvas.height = height * scale;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return alert('PDF generation not supported on this browser.');
+
+      ctx.scale(scale, scale);
+
+      // White Background
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+
+      // Top Header Bar
+      ctx.fillStyle = '#4f46e5';
+      ctx.fillRect(0, 0, width, 8);
+
+      let y = 34;
+      ctx.fillStyle = '#0f172a';
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 21px sans-serif';
+      ctx.fillText(currentShop?.name || 'STORE INVOICE', width / 2, y);
+      y += 20;
+
+      ctx.font = '12px sans-serif';
+      ctx.fillStyle = '#334155';
+      if (d.shopGstVal) {
+        ctx.font = 'bold 12px sans-serif';
+        ctx.fillText(`GSTIN: ${d.shopGstVal}`, width / 2, y);
+        y += 16;
+        ctx.font = '12px sans-serif';
+      }
+      ctx.fillText(`${currentShop?.address || ''} ${currentShop?.block || ''}`.trim().slice(0, 52), width / 2, y);
+      y += 16;
+      ctx.fillText(`Ph: +91 ${currentShop?.phone || ''}`, width / 2, y);
+      y += 18;
+
+      // Dashed Divider
+      ctx.strokeStyle = '#94a3b8';
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(16, y); ctx.lineTo(width - 16, y); ctx.stroke();
+      ctx.setLineDash([]);
+      y += 20;
+
+      // Meta Info
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.fillText(`Invoice No: #${bNo}`, 18, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(new Date(bill.created_at || Date.now()).toLocaleDateString('en-IN'), width - 18, y);
+      y += 18;
+
+      ctx.textAlign = 'left';
+      ctx.font = '12px sans-serif';
+      ctx.fillText(`Customer: ${bill.custName || bill.customer_name || 'Walk-in'}`, 18, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(`Pay: ${bill.paymentMethod || bill.payment_method || 'Cash'}`, width - 18, y);
+      y += 22;
+
+      // Table Header
+      ctx.fillStyle = '#e2e8f0';
+      ctx.fillRect(16, y - 14, width - 32, 24);
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'left'; ctx.fillText('Item', 22, y + 2);
+      ctx.textAlign = 'center'; ctx.fillText('Qty / Wt', 255, y + 2);
+      ctx.textAlign = 'right'; ctx.fillText('Amount', width - 22, y + 2);
+      y += 26;
+
+      // Items List
+      ctx.font = '12px sans-serif';
+      rawItems.forEach((it: any, idx: number) => {
+        const name = `${idx + 1}. ${it.name || it.product_name}`.slice(0, 28);
+        const qtyVal = it.qty ?? it.quantity ?? 1;
+        const qtyStr = `${qtyVal} ${it.unit || 'Pc'}`;
+        const amt = `Rs.${Number((qtyVal * it.price).toFixed(2))}`;
+        ctx.textAlign = 'left'; ctx.fillText(name, 22, y);
+        ctx.textAlign = 'center'; ctx.fillText(qtyStr, 255, y);
+        ctx.textAlign = 'right'; ctx.fillText(amt, width - 22, y);
+        y += rowHeight;
+      });
+
+      // Divider
+      ctx.strokeStyle = '#0f172a';
+      ctx.beginPath(); ctx.moveTo(16, y - 8); ctx.lineTo(width - 16, y - 8); ctx.stroke();
+      y += 14;
+
+      // Totals
+      ctx.textAlign = 'right';
+      ctx.font = '12px sans-serif';
+      ctx.fillText(`Subtotal: Rs.${d.subTotalVal}`, width - 22, y); y += 18;
+      if (d.discountVal > 0) { ctx.fillText(`Discount: -Rs.${d.discountVal}`, width - 22, y); y += 18; }
+      if (d.isGstVal) {
+        ctx.fillText(`Taxable Value: Rs.${d.taxableVal.toFixed(2)}`, width - 22, y); y += 16;
+        ctx.fillText(`CGST (${d.gstRateVal / 2}%): Rs.${(d.gstAmtVal / 2).toFixed(2)}`, width - 22, y); y += 16;
+        ctx.fillText(`SGST (${d.gstRateVal / 2}%): Rs.${(d.gstAmtVal / 2).toFixed(2)}`, width - 22, y); y += 18;
+      }
+      if (d.labourVal > 0) { ctx.fillText(`Labour Charges: +Rs.${d.labourVal}`, width - 22, y); y += 18; }
+      if (d.transportVal > 0) { ctx.fillText(`Transport: +Rs.${d.transportVal}`, width - 22, y); y += 18; }
+
+      ctx.font = 'bold 19px sans-serif';
+      ctx.fillStyle = '#15803d';
+      ctx.fillText(`GRAND TOTAL: Rs.${d.totalVal}`, width - 22, y + 6);
+      y += 32;
+
+      if (activeUpi) {
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#1e3a8a';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.fillText(`Pay via UPI: ${activeUpi}`, width / 2, y);
+        y += 22;
+      }
+
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#64748b';
+      ctx.font = '11px sans-serif';
+      ctx.fillText('Thank you for shopping with us!', width / 2, y + 10);
+
+      // Generate Real PDF Blob
+      const pdfBlob = createPdfBlobFromCanvas(canvas);
+      const fileName = `Bill_${bNo}.pdf`;
+      const pdfFile = new File([pdfBlob], fileName, { type: 'application/pdf' });
+
+      // Share PDF directly on Mobile (WhatsApp / Share Sheet)
+      if (shareOnWhatsApp) {
+        if (navigator.share && navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+          try {
+            await navigator.share({
+              title: `Invoice #${bNo}`,
+              text: `${currentShop?.name || 'Store'} - Invoice #${bNo} (₹${d.totalVal})`,
+              files: [pdfFile]
+            });
+            return;
+          } catch {}
+        }
+        // Fallback: Download PDF + open WhatsApp text bill
+        const url = URL.createObjectURL(pdfBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+        sendBillOnWhatsApp(bill);
+        return;
+      }
+
+      // Direct PDF Download
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } catch (err: any) {
+      alert('PDF Error: ' + err.message);
+    }
+  };
+
+  // ==========================================
+  // 📲 WHATSAPP TEXT BILL & 🖨️ PRINT
   // ==========================================
   const sendBillOnWhatsApp = (bill: any) => {
     let rawItems = bill.cartItems || bill.items || [];
@@ -1444,7 +1845,7 @@ export default function CounterBillingTab({
     const itemsListText = rawItems
       .map(
         (it: any, idx: number) =>
-          `${idx + 1}. *${it.name || it.product_name}* (${it.qty || it.quantity} ${it.unit || 'Pcs'}) x ₹${it.price} = *₹${(it.qty || it.quantity) * it.price}*`
+          `${idx + 1}. *${it.name || it.product_name}* (${it.qty || it.quantity} ${it.unit || 'Pc'}) x ₹${it.price} = *₹${Number(((it.qty || it.quantity) * it.price).toFixed(2))}*`
       )
       .join('%0A');
 
@@ -1484,12 +1885,26 @@ export default function CounterBillingTab({
     const cleanPhone = String(bill.custPhone || bill.customer_phone || bill.phone || '').replace(/\D/g, '');
     const waPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
     const waUrl = waPhone ? `https://wa.me/${waPhone}?text=${msg}` : `https://wa.me/?text=${msg}`;
-    window.open(waUrl, '_blank');
+
+    if (checkIsMobileDevice()) {
+      window.location.href = waUrl;
+    } else {
+      window.open(waUrl, '_blank');
+    }
   };
 
   const printInvoiceWithQr = (bill: any, format: 'thermal' | 'a4' = 'thermal') => {
+    // 📱 Mobile par window.open crash karta hai -> Mobile PDF Preview Modal kholein
+    if (checkIsMobileDevice()) {
+      setMobilePreviewBill(bill);
+      return;
+    }
+
     const printWin = window.open('', '_blank', format === 'thermal' ? 'width=420,height=780' : 'width=860,height=920');
-    if (!printWin) return window.print();
+    if (!printWin) {
+      setMobilePreviewBill(bill);
+      return;
+    }
 
     let rawItems = bill.cartItems || bill.items || [];
     if (typeof rawItems === 'string') {
@@ -1509,9 +1924,9 @@ export default function CounterBillingTab({
         (it: any, i: number) => `
         <tr>
           <td style="padding:5px 4px;border-bottom:1px dashed #ccc;">${i + 1}. ${it.name || it.product_name}</td>
-          <td style="padding:5px 4px;border-bottom:1px dashed #ccc;text-align:center;">${it.qty || it.quantity} ${it.unit || ''}</td>
+          <td style="padding:5px 4px;border-bottom:1px dashed #ccc;text-align:center;">${it.qty || it.quantity} ${it.unit || 'Pc'}</td>
           <td style="padding:5px 4px;border-bottom:1px dashed #ccc;text-align:right;">₹${it.price}</td>
-          <td style="padding:5px 4px;border-bottom:1px dashed #ccc;text-align:right;font-weight:bold;">₹${(it.qty || it.quantity) * it.price}</td>
+          <td style="padding:5px 4px;border-bottom:1px dashed #ccc;text-align:right;font-weight:bold;">₹${Number(((it.qty || it.quantity) * it.price).toFixed(2))}</td>
         </tr>
       `
       )
@@ -1648,7 +2063,7 @@ export default function CounterBillingTab({
         }
       }
       const itemSummary = Array.isArray(rawItems)
-        ? rawItems.map((i: any) => `${i.name || i.product_name} (${i.qty || i.quantity})`).join(' | ')
+        ? rawItems.map((i: any) => `${i.name || i.product_name} (${i.qty || i.quantity} ${i.unit || ''})`).join(' | ')
         : '';
 
       csvRows.push(
@@ -1688,8 +2103,12 @@ export default function CounterBillingTab({
   };
 
   const exportActiveTabToPdf = () => {
+    if (checkIsMobileDevice()) {
+      exportActiveTabToExcel();
+      return;
+    }
     const pdfWin = window.open('', '_blank', 'width=960,height=850');
-    if (!pdfWin) return window.print();
+    if (!pdfWin) return exportActiveTabToExcel();
     const isOnline = posSubView === 'online_history';
 
     const rowsHtml = filteredActiveRecords
@@ -1705,7 +2124,7 @@ export default function CounterBillingTab({
           }
         }
         const itemsText = Array.isArray(rawItems)
-          ? rawItems.map((it: any) => `${it.name || it.product_name} (${it.qty || it.quantity})`).join(', ')
+          ? rawItems.map((it: any) => `${it.name || it.product_name} (${it.qty || it.quantity} ${it.unit || ''})`).join(', ')
           : '';
         return `
           <tr>
@@ -2095,6 +2514,121 @@ export default function CounterBillingTab({
       `}</style>
 
       {/* ========================================================== */}
+      {/* 📱 MOBILE-SPECIAL PDF BILL PREVIEW & SHARE MODAL (NO CRASH) */}
+      {/* ========================================================== */}
+      {mobilePreviewBill && (() => {
+        const d = extractBillDetails(mobilePreviewBill);
+        const bNo = mobilePreviewBill.bill_no || mobilePreviewBill.billNo || mobilePreviewBill.order_no || mobilePreviewBill.id;
+        let rawItems = mobilePreviewBill.cartItems || mobilePreviewBill.items || [];
+        if (typeof rawItems === 'string') {
+          try { rawItems = JSON.parse(rawItems); } catch { rawItems = []; }
+        }
+        const qrInfo = getShopOwnerQrData(d.totalVal, String(bNo), d.billShopUpiVal);
+
+        return (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(2, 6, 23, 0.92)',
+              zIndex: 99999,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '12px',
+              overflowY: 'auto'
+            }}
+          >
+            <div style={{ background: '#ffffff', color: '#0f172a', borderRadius: '16px', width: '100%', maxWidth: '400px', padding: '16px', boxSizing: 'border-box', maxHeight: '92vh', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px dashed #cbd5e1', paddingBottom: '8px', marginBottom: '10px' }}>
+                <span style={{ background: '#4f46e5', color: 'white', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '900' }}>
+                  📄 PDF BILL #{bNo}
+                </span>
+                <button
+                  onClick={() => setMobilePreviewBill(null)}
+                  style={{ background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', padding: '5px 10px', fontWeight: '900', cursor: 'pointer' }}
+                >
+                  ✖ Close
+                </button>
+              </div>
+
+              <div style={{ textAlign: 'center', marginBottom: '10px' }}>
+                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '900' }}>{currentShop?.name || 'STORE'}</h3>
+                {d.shopGstVal && <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#059669' }}>GSTIN: {d.shopGstVal}</div>}
+                <div style={{ fontSize: '11px', color: '#475569' }}>{currentShop?.address || ''} {currentShop?.block || ''}</div>
+                <div style={{ fontSize: '11px', color: '#475569' }}>Ph: {currentShop?.phone || ''}</div>
+              </div>
+
+              <div style={{ fontSize: '12px', background: '#f8fafc', padding: '8px', borderRadius: '8px', marginBottom: '10px', border: '1px solid #e2e8f0' }}>
+                <div><strong>Customer:</strong> {mobilePreviewBill.custName || mobilePreviewBill.customer_name || 'Walk-in'}</div>
+                {(mobilePreviewBill.custPhone || mobilePreviewBill.phone) && <div><strong>Phone:</strong> {mobilePreviewBill.custPhone || mobilePreviewBill.phone}</div>}
+                <div><strong>Date:</strong> {new Date(mobilePreviewBill.created_at || Date.now()).toLocaleString('en-IN')}</div>
+              </div>
+
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', marginBottom: '10px' }}>
+                <thead>
+                  <tr style={{ background: '#e2e8f0' }}>
+                    <th style={{ padding: '6px', textAlign: 'left' }}>Item</th>
+                    <th style={{ padding: '6px', textAlign: 'center' }}>Qty / Wt</th>
+                    <th style={{ padding: '6px', textAlign: 'right' }}>Amt</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(Array.isArray(rawItems) ? rawItems : []).map((it: any, idx: number) => (
+                    <tr key={idx} style={{ borderBottom: '1px dashed #cbd5e1' }}>
+                      <td style={{ padding: '6px' }}>{idx + 1}. {it.name || it.product_name}</td>
+                      <td style={{ padding: '6px', textAlign: 'center' }}>{it.qty || it.quantity} {it.unit || 'Pc'}</td>
+                      <td style={{ padding: '6px', textAlign: 'right', fontWeight: 'bold' }}>₹{Number(((it.qty || it.quantity) * it.price).toFixed(2))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div style={{ textAlign: 'right', fontSize: '12px', borderTop: '1px solid #cbd5e1', paddingTop: '8px', marginBottom: '12px' }}>
+                <div>Subtotal: <strong>₹{d.subTotalVal}</strong></div>
+                {d.discountVal > 0 && <div>Discount: <strong>-₹{d.discountVal}</strong></div>}
+                {d.isGstVal && <div>GST ({d.gstRateVal}%): <strong>₹{d.gstAmtVal.toFixed(2)}</strong></div>}
+                {d.labourVal > 0 && <div>Labour: <strong>+₹{d.labourVal}</strong></div>}
+                {d.transportVal > 0 && <div>Transport: <strong>+₹{d.transportVal}</strong></div>}
+                <div style={{ fontSize: '18px', fontWeight: '900', color: '#15803d', marginTop: '4px' }}>
+                  GRAND TOTAL: ₹{d.totalVal}
+                </div>
+              </div>
+
+              {qrInfo.activeUpi && qrInfo.qrImg && (
+                <div style={{ textAlign: 'center', marginBottom: '12px', padding: '8px', background: '#eff6ff', borderRadius: '8px', border: '1px dashed #3b82f6' }}>
+                  <img src={qrInfo.qrImg} alt="QR" style={{ width: '100px', height: '100px', margin: '0 auto', display: 'block' }} />
+                  <div style={{ fontSize: '11px', fontWeight: 'bold', marginTop: '4px' }}>UPI: {qrInfo.activeUpi}</div>
+                </div>
+              )}
+
+              {/* 📱 MOBILE SPECIAL PDF ACTION BUTTONS */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <button
+                  onClick={() => downloadOrShareBillPdf(mobilePreviewBill, false)}
+                  style={{ width: '100%', padding: '12px', background: '#dc2626', color: 'white', border: 'none', borderRadius: '10px', fontWeight: '900', fontSize: '14px', cursor: 'pointer' }}
+                >
+                  📄 Download Bill PDF
+                </button>
+                <button
+                  onClick={() => downloadOrShareBillPdf(mobilePreviewBill, true)}
+                  style={{ width: '100%', padding: '12px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '10px', fontWeight: '900', fontSize: '14px', cursor: 'pointer' }}
+                >
+                  📤 Send PDF on WhatsApp
+                </button>
+                <button
+                  onClick={() => sendBillOnWhatsApp(mobilePreviewBill)}
+                  style={{ width: '100%', padding: '10px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '10px', fontWeight: '900', fontSize: '13px', cursor: 'pointer' }}
+                >
+                  💬 Send Text Bill on WhatsApp
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ========================================================== */}
       {/* 🌈 TOP NAVIGATION BAR + FULL-SCREEN DEDICATED POS BUTTON   */}
       {/* ========================================================== */}
       <div
@@ -2236,7 +2770,6 @@ export default function CounterBillingTab({
               🏛️ 4. GST Returns
             </button>
 
-            {/* 🖥️ DEDICATED FULL-SCREEN POS MODE BUTTON */}
             <button
               onClick={toggleFullScreenPos}
               title="Run dedicated Counter Billing full-screen on Mobile or Laptop"
@@ -2289,7 +2822,7 @@ export default function CounterBillingTab({
         )}
       </div>
 
-      {/* 🎉 INVOICE SAVED BANNER */}
+      {/* 🎉 INVOICE SAVED BANNER (PDF DOWNLOAD + WHATSAPP PDF) */}
       {lastGeneratedBill && (
         <div style={{ background: 'linear-gradient(135deg, #064e3b, #0f172a)', border: '2px solid #22c55e', borderRadius: '14px', padding: '14px', marginBottom: '14px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
@@ -2302,14 +2835,17 @@ export default function CounterBillingTab({
               </h3>
             </div>
             <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              <button onClick={() => downloadOrShareBillPdf(lastGeneratedBill, false)} style={{ padding: '8px 12px', background: '#dc2626', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '12px', cursor: 'pointer' }}>
+                📄 Download PDF
+              </button>
+              <button onClick={() => downloadOrShareBillPdf(lastGeneratedBill, true)} style={{ padding: '8px 12px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '12px', cursor: 'pointer' }}>
+                📤 Send PDF WhatsApp
+              </button>
               <button onClick={() => printInvoiceWithQr(lastGeneratedBill, 'thermal')} style={{ padding: '8px 12px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '12px', cursor: 'pointer' }}>
-                🖨️ Thermal Print
+                🖨️ Thermal / Preview
               </button>
               <button onClick={() => printInvoiceWithQr(lastGeneratedBill, 'a4')} style={{ padding: '8px 12px', background: '#7c3aed', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '12px', cursor: 'pointer' }}>
-                📄 A4 Invoice
-              </button>
-              <button onClick={() => sendBillOnWhatsApp(lastGeneratedBill)} style={{ padding: '8px 12px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '12px', cursor: 'pointer' }}>
-                📲 Share on WhatsApp
+                📄 A4 Print
               </button>
               <button onClick={() => setLastGeneratedBill(null)} style={{ padding: '8px 10px', background: '#334155', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
                 ✖
@@ -2461,39 +2997,51 @@ export default function CounterBillingTab({
               </div>
             </div>
 
+            {/* BIGGER CUSTOM ITEM BOX WITH WEIGHT / PC / PKT UNIT SELECTOR */}
             {showCustomItemBox && (
-              <div style={{ background: '#1e293b', padding: '10px', borderRadius: '10px', border: '1px solid #f59e0b', marginBottom: '10px' }}>
-                <div style={{ fontSize: '11.5px', color: '#fbbf24', fontWeight: 'bold', marginBottom: '6px' }}>Quick Add Non-Catalog Item:</div>
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              <div style={{ background: '#1e293b', padding: '12px', borderRadius: '10px', border: '2px solid #f59e0b', marginBottom: '10px' }}>
+                <div style={{ fontSize: '12.5px', color: '#fbbf24', fontWeight: 'bold', marginBottom: '8px' }}>➕ Quick Add Non-Catalog Item (Weight / Pc / Pkt):</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '8px', marginBottom: '8px' }}>
                   <input
                     type="text"
                     placeholder="Item Name..."
                     value={customItemName}
                     onChange={e => setCustomItemName(e.target.value)}
-                    style={{ flex: '2 1 120px', padding: '7px', borderRadius: '6px', border: '1px solid #475569', background: '#0f172a', color: 'white', fontSize: '12px' }}
+                    style={{ gridColumn: '1 / -1', padding: '10px', borderRadius: '8px', border: '1px solid #475569', background: '#0f172a', color: 'white', fontSize: '14px', fontWeight: 'bold' }}
                   />
                   <input
                     type="number"
+                    step="any"
                     placeholder="Rate ₹"
                     value={customItemPrice}
                     onChange={e => setCustomItemPrice(e.target.value)}
-                    style={{ flex: '1 1 70px', width: '70px', padding: '7px', borderRadius: '6px', border: '1px solid #475569', background: '#0f172a', color: 'white', fontSize: '12px' }}
+                    style={{ padding: '10px', borderRadius: '8px', border: '1px solid #475569', background: '#0f172a', color: 'white', fontSize: '14px', fontWeight: 'bold' }}
                   />
                   <input
                     type="number"
-                    placeholder="Qty"
+                    step="any"
+                    placeholder="Qty / Kg"
                     value={customItemQty}
                     onChange={e => setCustomItemQty(e.target.value)}
-                    style={{ flex: '1 1 55px', width: '55px', padding: '7px', borderRadius: '6px', border: '1px solid #475569', background: '#0f172a', color: 'white', fontSize: '12px' }}
+                    style={{ padding: '10px', borderRadius: '8px', border: '2px solid #38bdf8', background: '#0f172a', color: '#4ade80', fontSize: '15px', fontWeight: '900' }}
                   />
-                  <button
-                    type="button"
-                    onClick={handleAddCustomItem}
-                    style={{ background: '#16a34a', color: 'white', border: 'none', padding: '7px 12px', borderRadius: '6px', fontWeight: '900', cursor: 'pointer', fontSize: '12px' }}
+                  <select
+                    value={customItemUnit}
+                    onChange={e => setCustomItemUnit(e.target.value)}
+                    style={{ padding: '10px', borderRadius: '8px', border: '2px solid #f59e0b', background: '#0f172a', color: '#fbbf24', fontSize: '14px', fontWeight: '900', cursor: 'pointer' }}
                   >
-                    + Add
-                  </button>
+                    {UNIT_OPTIONS.map(u => (
+                      <option key={u} value={u}>{u}</option>
+                    ))}
+                  </select>
                 </div>
+                <button
+                  type="button"
+                  onClick={handleAddCustomItem}
+                  style={{ width: '100%', background: '#16a34a', color: 'white', border: 'none', padding: '10px', borderRadius: '8px', fontWeight: '900', cursor: 'pointer', fontSize: '14px' }}
+                >
+                  + Add Item to Bill
+                </button>
               </div>
             )}
 
@@ -2722,7 +3270,7 @@ export default function CounterBillingTab({
                             cursor: isOutOfStock ? 'not-allowed' : 'pointer'
                           }}
                         >
-                          {isOutOfStock ? '0 Stock' : inCart ? `✔ (${inCart.qty})` : '+ Add'}
+                          {isOutOfStock ? '0 Stock' : inCart ? `✔ (${inCart.qty} ${inCart.unit})` : '+ Add'}
                         </button>
                       </div>
                     </div>
@@ -2735,6 +3283,22 @@ export default function CounterBillingTab({
           {/* RIGHT 50% PANE: LIVE INVOICE TERMINAL */}
           <div id="live-bill-receipt-section" className="pos-half-pane">
             <div className="pos-live-receipt-box">
+              {/* ✏️ EDITING OLD BILL BANNER */}
+              {editingBill && (
+                <div style={{ background: '#fef3c7', border: '2px solid #f59e0b', borderRadius: '8px', padding: '8px 10px', marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ fontSize: '12px', fontWeight: '900', color: '#92400e' }}>
+                    ✏️ Editing Old Bill #{editingBill.bill_no || editingBill.billNo || editingBill.order_no}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCancelEditBill}
+                    style={{ background: '#dc2626', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    ✖ Cancel Edit
+                  </button>
+                </div>
+              )}
+
               <div style={{ textAlign: 'center', borderBottom: '2px dashed #94a3b8', paddingBottom: '8px', marginBottom: '10px' }}>
                 {isGstBillEnabled && (
                   <span style={{ background: '#059669', color: 'white', padding: '2px 10px', borderRadius: '10px', fontSize: '10px', fontWeight: '900', display: 'inline-block', marginBottom: '4px' }}>
@@ -2793,100 +3357,111 @@ export default function CounterBillingTab({
                 </div>
               </div>
 
-              {/* Cart Items Table WITH THUMBNAILS */}
-              <div style={{ minHeight: '165px', maxHeight: '245px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '8px', marginBottom: '10px', background: '#fafafa' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', color: '#0f172a' }}>
-                  <thead>
-                    <tr style={{ background: '#e2e8f0', color: '#1e293b', borderBottom: '2px solid #cbd5e1' }}>
-                      <th style={{ padding: '7px 6px', textAlign: 'left' }}>Item</th>
-                      <th style={{ padding: '7px 4px', textAlign: 'center' }}>Rate (₹)</th>
-                      <th style={{ padding: '7px 4px', textAlign: 'center' }}>Qty</th>
-                      <th style={{ padding: '7px 6px', textAlign: 'right' }}>Amount</th>
-                      <th style={{ padding: '7px 4px' }}></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cart.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} style={{ textAlign: 'center', padding: '45px 10px', color: '#64748b', fontWeight: 'bold' }}>
-                          Select items from Inventory or Scan QR to start billing.
-                        </td>
-                      </tr>
-                    ) : (
-                      cart.map((item, idx) => (
-                        <tr key={item.id} style={{ borderBottom: '1px dashed #cbd5e1', background: '#fff' }}>
-                          <td style={{ padding: '6px', fontWeight: '800' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              {item.image ? (
-                                <img src={item.image} alt="" style={{ width: '28px', height: '28px', minWidth: '28px', borderRadius: '6px', objectFit: 'cover', border: '1px solid #94a3b8' }} />
-                              ) : (
-                                <span style={{ width: '28px', height: '28px', minWidth: '28px', borderRadius: '6px', background: '#e2e8f0', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '900' }}>
-                                  {String(item.name || 'I').charAt(0).toUpperCase()}
-                                </span>
-                              )}
-                              <div style={{ minWidth: 0 }}>
-                                <div style={{ fontSize: '12px', color: '#0f172a' }}>{idx + 1}. {item.name}</div>
-                                <small style={{ color: '#64748b', fontWeight: 'normal', fontSize: '10px' }}>
-                                  {item.category} {!item.isCustom ? `(Max: ${item.maxStock})` : ''}
-                                </small>
-                              </div>
+              {/* BIGGER CART ITEMS LIST (EASY QTY / WEIGHT / PC / PKT INPUTS) */}
+              <div style={{ minHeight: '180px', maxHeight: '320px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '8px', marginBottom: '10px', background: '#f8fafc', padding: '6px' }}>
+                {cart.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '55px 10px', color: '#64748b', fontWeight: 'bold', fontSize: '13px' }}>
+                    Select items from Inventory or Scan QR to start billing.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {cart.map((item, idx) => (
+                      <div
+                        key={item.id}
+                        style={{
+                          background: '#ffffff',
+                          border: '1px solid #cbd5e1',
+                          borderRadius: '10px',
+                          padding: '8px 10px',
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.06)'
+                        }}
+                      >
+                        {/* Row 1: Name + Delete */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                            {item.image ? (
+                              <img src={item.image} alt="" style={{ width: '28px', height: '28px', minWidth: '28px', borderRadius: '6px', objectFit: 'cover', border: '1px solid #94a3b8' }} />
+                            ) : (
+                              <span style={{ width: '28px', height: '28px', minWidth: '28px', borderRadius: '6px', background: '#e2e8f0', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '900' }}>
+                                {String(item.name || 'I').charAt(0).toUpperCase()}
+                              </span>
+                            )}
+                            <div style={{ fontSize: '13px', fontWeight: '900', color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {idx + 1}. {item.name}
                             </div>
-                          </td>
-                          <td style={{ padding: '6px 4px', textAlign: 'center' }}>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => updateCartQty(item.id, 0)}
+                            style={{ background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: '6px', padding: '4px 8px', cursor: 'pointer', fontWeight: '900', fontSize: '11px' }}
+                          >
+                            ✖
+                          </button>
+                        </div>
+
+                        {/* Row 2: Bigger Rate, Bigger Qty/Weight + Unit Dropdown + Amount */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                          {/* Rate */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569' }}>₹</span>
                             <input
                               type="number"
+                              step="any"
                               value={item.price}
                               onChange={e => updateCartPrice(item.id, parseFloat(e.target.value) || 0)}
-                              style={{ width: '54px', padding: '3px', textAlign: 'center', borderRadius: '5px', border: '1px solid #94a3b8', fontWeight: 'bold', color: '#0f172a', fontSize: '11.5px' }}
+                              style={{ width: '70px', padding: '6px', textAlign: 'center', borderRadius: '6px', border: '1.5px solid #94a3b8', fontWeight: '900', color: '#0f172a', fontSize: '13.5px' }}
                             />
-                          </td>
-                          <td style={{ padding: '6px 4px', textAlign: 'center' }}>
-                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
-                              <button
-                                type="button"
-                                onClick={() => updateCartQty(item.id, item.qty - 1)}
-                                style={{ width: '22px', height: '22px', borderRadius: '5px', border: 'none', background: '#e2e8f0', color: '#0f172a', fontWeight: '900', cursor: 'pointer' }}
-                              >
-                                -
-                              </button>
-                              <input
-                                type="number"
-                                value={item.qty}
-                                onChange={e => updateCartQty(item.id, parseFloat(e.target.value) || 0)}
-                                style={{ width: '32px', textAlign: 'center', padding: '2px', borderRadius: '4px', border: '1px solid #cbd5e1', fontWeight: 'bold', fontSize: '11.5px' }}
-                              />
-                              <button
-                                type="button"
-                                onClick={() => updateCartQty(item.id, item.qty + 1)}
-                                style={{ width: '22px', height: '22px', borderRadius: '5px', border: 'none', background: '#2563eb', color: 'white', fontWeight: '900', cursor: 'pointer' }}
-                              >
-                                +
-                              </button>
-                            </div>
-                          </td>
-                          <td style={{ padding: '6px', textAlign: 'right', fontWeight: '900', color: '#15803d' }}>
-                            ₹{item.price * item.qty}
-                          </td>
-                          <td style={{ padding: '6px 4px', textAlign: 'center' }}>
+                          </div>
+
+                          {/* Bigger Qty / Weight Controls + Unit Selector */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                             <button
                               type="button"
-                              onClick={() => updateCartQty(item.id, 0)}
-                              style={{ background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: '4px', padding: '2px 5px', cursor: 'pointer', fontWeight: 'bold', fontSize: '10px' }}
+                              onClick={() => updateCartQty(item.id, Number((item.qty - 1).toFixed(2)))}
+                              style={{ width: '30px', height: '32px', borderRadius: '6px', border: 'none', background: '#e2e8f0', color: '#0f172a', fontWeight: '900', fontSize: '16px', cursor: 'pointer' }}
                             >
-                              ✖
+                              -
                             </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                            <input
+                              type="number"
+                              step="any"
+                              value={item.qty}
+                              onChange={e => updateCartQty(item.id, parseFloat(e.target.value))}
+                              style={{ width: '68px', height: '32px', textAlign: 'center', padding: '4px', borderRadius: '6px', border: '2px solid #2563eb', fontWeight: '900', fontSize: '14px', color: '#0f172a', boxSizing: 'border-box' }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => updateCartQty(item.id, Number((item.qty + 1).toFixed(2)))}
+                              style={{ width: '30px', height: '32px', borderRadius: '6px', border: 'none', background: '#2563eb', color: 'white', fontWeight: '900', fontSize: '16px', cursor: 'pointer' }}
+                            >
+                              +
+                            </button>
+                            <select
+                              value={item.unit || 'Pc'}
+                              onChange={e => updateCartUnit(item.id, e.target.value)}
+                              style={{ height: '32px', padding: '0 6px', borderRadius: '6px', border: '1.5px solid #f59e0b', background: '#fef3c7', color: '#92400e', fontWeight: '900', fontSize: '12.5px', cursor: 'pointer' }}
+                            >
+                              {UNIT_OPTIONS.map(u => (
+                                <option key={u} value={u}>{u}</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {/* Total */}
+                          <div style={{ fontSize: '14.5px', fontWeight: '900', color: '#15803d', marginLeft: 'auto' }}>
+                            ₹{Number((item.price * item.qty).toFixed(2))}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Totals, Charges & GST Settings */}
               <div style={{ background: '#f8fafc', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', marginBottom: '10px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', marginBottom: '6px', color: '#334155' }}>
-                  <span>Subtotal ({cart.reduce((s, i) => s + i.qty, 0)} Units):</span>
+                  <span>Subtotal ({cart.length} Items):</span>
                   <strong>₹{subTotal}</strong>
                 </div>
 
@@ -2897,7 +3472,7 @@ export default function CounterBillingTab({
                       type="number"
                       value={discount}
                       onChange={e => setDiscount(e.target.value)}
-                      style={{ width: '100%', padding: '3px', borderRadius: '4px', border: '1px solid #e2e8f0', fontWeight: 'bold', color: '#dc2626', fontSize: '12px', boxSizing: 'border-box' }}
+                      style={{ width: '100%', padding: '4px', borderRadius: '4px', border: '1px solid #e2e8f0', fontWeight: 'bold', color: '#dc2626', fontSize: '13px', boxSizing: 'border-box' }}
                     />
                   </div>
                   <div style={{ background: '#fff', padding: '5px 6px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
@@ -2906,7 +3481,7 @@ export default function CounterBillingTab({
                       type="number"
                       value={labourCharge}
                       onChange={e => setLabourCharge(e.target.value)}
-                      style={{ width: '100%', padding: '3px', borderRadius: '4px', border: '1px solid #e2e8f0', fontWeight: 'bold', color: '#1e3a8a', fontSize: '12px', boxSizing: 'border-box' }}
+                      style={{ width: '100%', padding: '4px', borderRadius: '4px', border: '1px solid #e2e8f0', fontWeight: 'bold', color: '#1e3a8a', fontSize: '13px', boxSizing: 'border-box' }}
                     />
                   </div>
                   <div style={{ background: '#fff', padding: '5px 6px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
@@ -2915,7 +3490,7 @@ export default function CounterBillingTab({
                       type="number"
                       value={transportCharge}
                       onChange={e => setTransportCharge(e.target.value)}
-                      style={{ width: '100%', padding: '3px', borderRadius: '4px', border: '1px solid #e2e8f0', fontWeight: 'bold', color: '#5b21b6', fontSize: '12px', boxSizing: 'border-box' }}
+                      style={{ width: '100%', padding: '4px', borderRadius: '4px', border: '1px solid #e2e8f0', fontWeight: 'bold', color: '#5b21b6', fontSize: '13px', boxSizing: 'border-box' }}
                     />
                   </div>
                 </div>
@@ -2934,7 +3509,6 @@ export default function CounterBillingTab({
 
                   {isGstBillEnabled && (
                     <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px dashed #6ee7b7' }}>
-                      {/* Inclusive vs Exclusive Toggle */}
                       <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
                         <button
                           type="button"
@@ -3093,15 +3667,15 @@ export default function CounterBillingTab({
                 </div>
               )}
 
-              {/* Save Invoice Button */}
+              {/* Save / Update Invoice Button */}
               <button
                 disabled={isGeneratingBill || cart.length === 0}
                 onClick={handleGenerateCounterBill}
                 style={{
                   width: '100%',
                   padding: '13px',
-                  background: cart.length === 0 ? '#94a3b8' : 'linear-gradient(135deg, #16a34a, #15803d)',
-                  color: 'white',
+                  background: cart.length === 0 ? '#94a3b8' : editingBill ? 'linear-gradient(135deg, #f59e0b, #d97706)' : 'linear-gradient(135deg, #16a34a, #15803d)',
+                  color: editingBill ? '#0f172a' : 'white',
                   border: 'none',
                   borderRadius: '10px',
                   fontWeight: '900',
@@ -3111,6 +3685,8 @@ export default function CounterBillingTab({
               >
                 {isGeneratingBill
                   ? 'Processing Invoice & Updating Stock...'
+                  : editingBill
+                  ? `✏️ Update Old Bill #${editingBill.bill_no || editingBill.billNo || editingBill.order_no} (₹${grandTotal})`
                   : `✅ Save & Generate ${isGstBillEnabled ? 'GST Invoice' : 'Bill'} (₹${grandTotal})`}
               </button>
             </div>
@@ -3162,7 +3738,7 @@ export default function CounterBillingTab({
               </h3>
               <p style={{ margin: '3px 0 0 0', fontSize: '11.5px', color: '#cbd5e1' }}>
                 {posSubView === 'counter_history'
-                  ? 'Permanent database ledger of all Counter POS invoices.'
+                  ? 'Permanent database ledger of all Counter POS invoices. Click Edit to modify any old bill.'
                   : 'Dedicated ledger of all Online App orders.'}
               </p>
             </div>
@@ -3384,7 +3960,7 @@ export default function CounterBillingTab({
 
                           {Array.isArray(rawItems) && rawItems.length > 0 && (
                             <div style={{ fontSize: '11px', color: '#38bdf8', marginTop: '2px', fontWeight: 'bold' }}>
-                              Items: {rawItems.map((it: any) => `${it.name || it.product_name} (${it.qty || it.quantity} ${it.unit || ''})`).join(', ')}
+                              Items: {rawItems.map((it: any) => `${it.name || it.product_name} (${it.qty || it.quantity} ${it.unit || 'Pc'})`).join(', ')}
                             </div>
                           )}
 
@@ -3404,6 +3980,26 @@ export default function CounterBillingTab({
                           <span style={{ fontSize: '17px', fontWeight: '900', color: '#4ade80', marginRight: '4px' }}>
                             ₹{d.totalVal}
                           </span>
+                          {!isOnline && (
+                            <button
+                              onClick={() => handleStartEditBill(sale)}
+                              style={{ background: '#f59e0b', color: '#0f172a', border: 'none', padding: '7px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '900', cursor: 'pointer' }}
+                            >
+                              ✏️ Edit
+                            </button>
+                          )}
+                          <button
+                            onClick={() => downloadOrShareBillPdf(sale, false)}
+                            style={{ background: '#dc2626', color: 'white', border: 'none', padding: '7px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '900', cursor: 'pointer' }}
+                          >
+                            📄 PDF
+                          </button>
+                          <button
+                            onClick={() => downloadOrShareBillPdf(sale, true)}
+                            style={{ background: '#16a34a', color: 'white', border: 'none', padding: '7px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '900', cursor: 'pointer' }}
+                          >
+                            📤 WA PDF
+                          </button>
                           <button
                             onClick={() => printInvoiceWithQr(sale, 'thermal')}
                             style={{ background: '#2563eb', color: 'white', border: 'none', padding: '7px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '900', cursor: 'pointer' }}
@@ -3415,12 +4011,6 @@ export default function CounterBillingTab({
                             style={{ background: '#7c3aed', color: 'white', border: 'none', padding: '7px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '900', cursor: 'pointer' }}
                           >
                             📄 A4
-                          </button>
-                          <button
-                            onClick={() => sendBillOnWhatsApp(sale)}
-                            style={{ background: '#16a34a', color: 'white', border: 'none', padding: '7px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '900', cursor: 'pointer' }}
-                          >
-                            📲 WhatsApp
                           </button>
                         </div>
                       </div>
